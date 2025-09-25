@@ -1,10 +1,24 @@
 package com.example.s3proxy;
+
+import io.minio.MinioClient;
+import io.minio.GetObjectArgs;
+import io.minio.GetObjectResponse;
+import io.minio.PutObjectArgs;
+import io.minio.RemoveObjectArgs;
+import io.minio.GetPresignedObjectUrlArgs;
+import io.minio.http.Method;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.server.ServerWebExchange;
 import reactor.core.publisher.Mono;
 
+import org.springframework.core.io.buffer.DataBuffer;
+import org.springframework.core.io.buffer.DataBufferUtils;
 
 import java.io.InputStream;
 import java.time.Duration;
@@ -28,7 +42,7 @@ public Mono<ResponseEntity<byte[]>> get(
 @PathVariable("key") String key) {
 return Mono.fromCallable(() -> {
 try (GetObjectResponse obj = minio.getObject(GetObjectArgs.builder()
-.bucket(bucket).`object`(key).build())) {
+.bucket(bucket).object(key).build())) {
 byte[] data = obj.readAllBytes();
 HttpHeaders h = new HttpHeaders();
 if (obj.headers().get("Content-Type") != null) {
@@ -46,31 +60,26 @@ public Mono<ResponseEntity<Void>> put(
 @PathVariable String bucket,
 @PathVariable("key") String key,
 ServerWebExchange exchange) {
-return exchange.getRequest().getBody()
-.reduce(new java.io.ByteArrayOutputStream(), (baos, dataBuffer) -> {
+return DataBufferUtils.join(exchange.getRequest().getBody())
+.flatMap(dataBuffer -> {
 try {
-dataBuffer.readableByteBuffers().forEach(bb -> {
-byte[] bytes = new byte[bb.remaining()];
-bb.get(bytes);
-try { baos.write(bytes); } catch (Exception ignored) {}
-});
-} finally {
-dataBuffer.release();
-}
-return baos;
-})
-.flatMap(baos -> Mono.fromCallable(() -> {
-byte[] bytes = baos.toByteArray();
+byte[] bytes = new byte[dataBuffer.readableByteCount()];
+dataBuffer.read(bytes);
+DataBufferUtils.release(dataBuffer);
+
 try (InputStream is = new java.io.ByteArrayInputStream(bytes)) {
 String contentType = exchange.getRequest().getHeaders().getFirst("Content-Type");
 PutObjectArgs.Builder b = PutObjectArgs.builder()
-.bucket(bucket).`object`(key)
+.bucket(bucket).object(key)
 .stream(is, bytes.length, -1);
 if (contentType != null) b.contentType(contentType);
 minio.putObject(b.build());
 }
-return ResponseEntity.status(HttpStatus.CREATED).<Void>build();
-}));
+return Mono.just(ResponseEntity.status(HttpStatus.CREATED).<Void>build());
+} catch (Exception e) {
+return Mono.error(e);
+}
+});
 }
 
 
@@ -80,7 +89,7 @@ public Mono<ResponseEntity<Void>> delete(
 @PathVariable String bucket,
 @PathVariable("key") String key) {
 return Mono.fromCallable(() -> {
-minio.removeObject(RemoveObjectArgs.builder().bucket(bucket).`object`(key).build());
+minio.removeObject(RemoveObjectArgs.builder().bucket(bucket).object(key).build());
 return ResponseEntity.noContent().build();
 });
 }
@@ -97,7 +106,7 @@ return Mono.fromCallable(() -> {
 Method m = switch (method.toUpperCase()) {
 case "PUT" -> Method.PUT; case "POST" -> Method.POST; case "DELETE" -> Method.DELETE; default -> Method.GET; };
 String url = minio.getPresignedObjectUrl(GetPresignedObjectUrlArgs.builder()
-.method(m).bucket(bucket).`object`(key).expiry(expirySeconds).build());
+.method(m).bucket(bucket).object(key).expiry(expirySeconds).build());
 return Map.of("url", url, "method", method);
 });
 }
