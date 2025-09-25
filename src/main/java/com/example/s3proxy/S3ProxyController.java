@@ -38,10 +38,11 @@ public class S3ProxyController {
 
 
     // GET /proxy/{bucket}/{**key}
-    @GetMapping(value = "/{bucket}/{key}")
+    @GetMapping(value = "/{bucket}/**")
     public Mono<ResponseEntity<byte[]>> get(
             @PathVariable String bucket,
-            @PathVariable("key") String key) {
+            ServerWebExchange exchange) {
+        String key = extractKey(exchange.getRequest().getPath().toString());
         return Mono.fromCallable(() -> {
             try (GetObjectResponse obj = minio.getObject(GetObjectArgs.builder()
                     .bucket(bucket).object(key).build())) {
@@ -57,11 +58,11 @@ public class S3ProxyController {
 
 
     // PUT /proxy/{bucket}/{**key}
-    @PutMapping(value = "/{bucket}/{key}")
+    @PutMapping(value = "/{bucket}/**")
     public Mono<ResponseEntity<Void>> put(
             @PathVariable String bucket,
-            @PathVariable("key") String key,
             ServerWebExchange exchange) {
+        String key = extractKey(exchange.getRequest().getURI().getPath());
         return DataBufferUtils.join(exchange.getRequest().getBody())
                 .flatMap(dataBuffer -> {
                     try {
@@ -86,10 +87,11 @@ public class S3ProxyController {
 
 
     // DELETE /proxy/{bucket}/{**key}
-    @DeleteMapping(value = "/{bucket}/{key}")
+    @DeleteMapping(value = "/{bucket}/**")
     public Mono<ResponseEntity<Void>> delete(
             @PathVariable String bucket,
-            @PathVariable("key") String key) {
+            ServerWebExchange exchange) {
+        String key = extractKey(exchange.getRequest().getPath().toString());
         return Mono.fromCallable(() -> {
             minio.removeObject(RemoveObjectArgs.builder().bucket(bucket).object(key).build());
             return ResponseEntity.noContent().build();
@@ -98,12 +100,13 @@ public class S3ProxyController {
 
 
     // GET /proxy/presign/{bucket}/{**key}?method=GET&expiry=600
-    @GetMapping("/presign/{bucket}/{key}")
+    @GetMapping("/presign/{bucket}/**")
     public Mono<Map<String, String>> presign(
             @PathVariable String bucket,
-            @PathVariable("key") String key,
             @RequestParam(defaultValue = "GET") String method,
-            @RequestParam(defaultValue = "600") Integer expirySeconds) {
+            @RequestParam(defaultValue = "600") Integer expirySeconds,
+            ServerWebExchange exchange) {
+        String key = extractPresignKey(exchange.getRequest().getPath().toString());
         return Mono.fromCallable(() -> {
             Method m = switch (method.toUpperCase()) {
                 case "PUT" -> Method.PUT;
@@ -115,5 +118,18 @@ public class S3ProxyController {
                     .method(m).bucket(bucket).object(key).expiry(expirySeconds).build());
             return Map.of("url", url, "method", method);
         });
+    }
+    
+    private String extractKey(String path) {
+        // Remove /proxy/{bucket}/ from the path
+        int bucketStart = path.indexOf('/', 1) + 1; // Find second slash
+        int bucketEnd = path.indexOf('/', bucketStart); // Find third slash
+        return bucketEnd > 0 ? path.substring(bucketEnd + 1) : "";
+    }
+    
+    private String extractPresignKey(String path) {
+        // Remove /proxy/presign/{bucket}/ from the path
+        int bucketStart = path.indexOf('/', path.indexOf("/presign/") + 9) + 1; // Find slash after bucket
+        return bucketStart > 0 ? path.substring(bucketStart) : "";
     }
 }
