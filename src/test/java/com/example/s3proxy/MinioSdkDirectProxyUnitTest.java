@@ -18,6 +18,7 @@ import java.io.ByteArrayInputStream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * Unit test that simulates MinIO SDK direct access against the proxy service
@@ -42,6 +43,7 @@ public class MinioSdkDirectProxyUnitTest {
         proxyMinioClient = MinioClient.builder()
                 .endpoint("http://localhost:" + port)
                 .credentials("minioadmin", "minioadmin")
+                .region("us-east-1")
                 .build();
     }
 
@@ -124,23 +126,36 @@ public class MinioSdkDirectProxyUnitTest {
         String objectKey = "test-object.txt";
 
         // Test presigned URL generation through MinIO SDK
-        Exception exception = assertThrows(Exception.class, () -> {
-            proxyMinioClient.getPresignedObjectUrl(
+        try {
+            String presignedUrl = proxyMinioClient.getPresignedObjectUrl(
                     GetPresignedObjectUrlArgs.builder()
                             .method(Method.GET)
                             .bucket(bucket)
                             .object(objectKey)
                             .expiry(600)
                             .build());
-        });
-
-        // Log the exception to understand the compatibility issue
-        System.out.println("=== MinIO SDK Presigned URL Exception ===");
-        System.out.println("Exception type: " + exception.getClass().getSimpleName());
-        System.out.println("Exception message: " + exception.getMessage());
-        if (exception.getCause() != null) {
-            System.out.println("Root cause: " + exception.getCause().getMessage());
+                            
+            System.out.println("=== MinIO SDK Presigned URL Success ===");
+            System.out.println("✅ Presigned URL generated successfully!");
+            System.out.println("URL: " + presignedUrl);
+            System.out.println("Note: URL generation works, but the URL itself points to the proxy endpoint");
+            System.out.println("which now has authentication - this is an improvement!");
+            System.out.println("=======================================");
+            
+            // Verify URL contains our proxy endpoint
+            assertTrue(presignedUrl.contains("localhost:" + port), 
+                      "Generated URL should contain proxy endpoint");
+            
+        } catch (Exception e) {
+            // If there's still an exception, log it
+            System.out.println("=== MinIO SDK Presigned URL Exception ===");
+            System.out.println("Exception type: " + e.getClass().getSimpleName());
+            System.out.println("Exception message: " + e.getMessage());
+            if (e.getCause() != null) {
+                System.out.println("Root cause: " + e.getCause().getMessage());
+            }
+            System.out.println("========================================");
+            throw e; // Re-throw to fail the test if there's an unexpected exception
         }
-        System.out.println("========================================");
     }
 }
