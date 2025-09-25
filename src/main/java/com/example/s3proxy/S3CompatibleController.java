@@ -49,7 +49,12 @@ public class S3CompatibleController {
                 // Check if bucket exists using the underlying MinIO client
                 boolean exists = minio.bucketExists(BucketExistsArgs.builder().bucket(bucket).build());
                 if (exists) {
-                    return ResponseEntity.ok().build();
+                    HttpHeaders headers = new HttpHeaders();
+                    headers.set("x-amz-bucket-region", "us-east-1");
+                    headers.set("x-amz-request-id", java.util.UUID.randomUUID().toString().replace("-", "").substring(0, 16).toUpperCase());
+                    headers.set("x-amz-id-2", java.util.UUID.randomUUID().toString());
+                    headers.set("Server", "MinIO");
+                    return new ResponseEntity<>(headers, HttpStatus.OK);
                 } else {
                     return ResponseEntity.notFound().build();
                 }
@@ -102,6 +107,13 @@ public class S3CompatibleController {
                 if (obj.headers().get("Content-Type") != null) {
                     h.setContentType(MediaType.parseMediaType(obj.headers().get("Content-Type")));
                 }
+                // Add proper S3 headers
+                h.set("ETag", obj.headers().get("ETag"));
+                h.set("Last-Modified", obj.headers().get("Last-Modified"));
+                h.set("x-amz-request-id", java.util.UUID.randomUUID().toString().replace("-", "").substring(0, 16).toUpperCase());
+                h.set("x-amz-id-2", java.util.UUID.randomUUID().toString());
+                h.set("Server", "MinIO");
+                
                 return new ResponseEntity<>(data, h, HttpStatus.OK);
             }
         }).onErrorReturn(ResponseEntity.notFound().build());
@@ -129,7 +141,15 @@ public class S3CompatibleController {
                             if (contentType != null) b.contentType(contentType);
                             minio.putObject(b.build());
                         }
-                        return Mono.just(ResponseEntity.status(HttpStatus.CREATED).<Void>build());
+                        
+                        // Return proper S3 response headers
+                        HttpHeaders headers = new HttpHeaders();
+                        headers.set("ETag", "\"" + Integer.toHexString(java.util.Arrays.hashCode(bytes)) + "\"");
+                        headers.set("x-amz-request-id", java.util.UUID.randomUUID().toString().replace("-", "").substring(0, 16).toUpperCase());
+                        headers.set("x-amz-id-2", java.util.UUID.randomUUID().toString());
+                        headers.set("Server", "MinIO");
+                        
+                        return Mono.just(new ResponseEntity<>(headers, HttpStatus.CREATED));
                     } catch (Exception e) {
                         log.error("Error putting object: ", e);
                         return Mono.just(ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).<Void>build());
@@ -146,7 +166,14 @@ public class S3CompatibleController {
         return Mono.fromCallable(() -> {
             try {
                 minio.removeObject(RemoveObjectArgs.builder().bucket(bucket).object(key).build());
-                return ResponseEntity.noContent().build();
+                
+                // Return proper S3 headers for delete
+                HttpHeaders headers = new HttpHeaders();
+                headers.set("x-amz-request-id", java.util.UUID.randomUUID().toString().replace("-", "").substring(0, 16).toUpperCase());
+                headers.set("x-amz-id-2", java.util.UUID.randomUUID().toString());
+                headers.set("Server", "MinIO");
+                
+                return new ResponseEntity<>(headers, HttpStatus.NO_CONTENT);
             } catch (Exception e) {
                 log.error("Error deleting object: ", e);
                 return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).build();
@@ -170,8 +197,11 @@ public class S3CompatibleController {
                 if (stat.contentType() != null) {
                     headers.setContentType(MediaType.parseMediaType(stat.contentType()));
                 }
-                headers.set("Last-Modified", stat.lastModified().toString());
+                headers.set("Last-Modified", stat.lastModified().format(java.time.format.DateTimeFormatter.RFC_1123_DATE_TIME));
                 headers.set("ETag", stat.etag());
+                headers.set("x-amz-request-id", java.util.UUID.randomUUID().toString().replace("-", "").substring(0, 16).toUpperCase());
+                headers.set("x-amz-id-2", java.util.UUID.randomUUID().toString());
+                headers.set("Server", "MinIO");
                 
                 return new ResponseEntity<>(headers, HttpStatus.OK);
             } catch (Exception e) {

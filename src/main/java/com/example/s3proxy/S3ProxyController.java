@@ -50,7 +50,17 @@ public class S3ProxyController {
                 if (obj.headers().get("Content-Type") != null) {
                     h.setContentType(MediaType.parseMediaType(obj.headers().get("Content-Type")));
                 }
+                // Add proper S3 headers to match S3CompatibleController
+                h.set("ETag", obj.headers().get("ETag"));
+                h.set("Last-Modified", obj.headers().get("Last-Modified"));
+                h.set("x-amz-request-id", java.util.UUID.randomUUID().toString().replace("-", "").substring(0, 16).toUpperCase());
+                h.set("x-amz-id-2", java.util.UUID.randomUUID().toString());
+                h.set("Server", "MinIO");
+                
                 return new ResponseEntity<>(data, h, HttpStatus.OK);
+            } catch (Exception e) {
+                log.error("Error getting object: ", e);
+                return ResponseEntity.notFound().build();
             }
         });
     }
@@ -77,9 +87,18 @@ public class S3ProxyController {
                             if (contentType != null) b.contentType(contentType);
                             minio.putObject(b.build());
                         }
-                        return Mono.just(ResponseEntity.status(HttpStatus.CREATED).<Void>build());
+                        
+                        // Return proper S3 response headers to match S3CompatibleController
+                        HttpHeaders headers = new HttpHeaders();
+                        headers.set("ETag", "\"" + Integer.toHexString(java.util.Arrays.hashCode(bytes)) + "\"");
+                        headers.set("x-amz-request-id", java.util.UUID.randomUUID().toString().replace("-", "").substring(0, 16).toUpperCase());
+                        headers.set("x-amz-id-2", java.util.UUID.randomUUID().toString());
+                        headers.set("Server", "MinIO");
+                        
+                        return Mono.just(new ResponseEntity<>(headers, HttpStatus.CREATED));
                     } catch (Exception e) {
-                        return Mono.error(e);
+                        log.error("Error putting object: ", e);
+                        return Mono.just(ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).<Void>build());
                     }
                 });
     }
@@ -91,8 +110,20 @@ public class S3ProxyController {
             @PathVariable String bucket,
             @PathVariable("key") String key) {
         return Mono.fromCallable(() -> {
-            minio.removeObject(RemoveObjectArgs.builder().bucket(bucket).object(key).build());
-            return ResponseEntity.noContent().build();
+            try {
+                minio.removeObject(RemoveObjectArgs.builder().bucket(bucket).object(key).build());
+                
+                // Return proper S3 headers for delete to match S3CompatibleController
+                HttpHeaders headers = new HttpHeaders();
+                headers.set("x-amz-request-id", java.util.UUID.randomUUID().toString().replace("-", "").substring(0, 16).toUpperCase());
+                headers.set("x-amz-id-2", java.util.UUID.randomUUID().toString());
+                headers.set("Server", "MinIO");
+                
+                return new ResponseEntity<>(headers, HttpStatus.NO_CONTENT);
+            } catch (Exception e) {
+                log.error("Error deleting object: ", e);
+                return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).build();
+            }
         });
     }
 
