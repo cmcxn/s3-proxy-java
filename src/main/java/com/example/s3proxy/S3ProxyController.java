@@ -51,6 +51,9 @@ public class S3ProxyController {
                     h.setContentType(MediaType.parseMediaType(obj.headers().get("Content-Type")));
                 }
                 return new ResponseEntity<>(data, h, HttpStatus.OK);
+            } catch (Exception e) {
+                log.error("Error getting object: ", e);
+                return ResponseEntity.notFound().build();
             }
         });
     }
@@ -79,7 +82,8 @@ public class S3ProxyController {
                         }
                         return Mono.just(ResponseEntity.status(HttpStatus.CREATED).<Void>build());
                     } catch (Exception e) {
-                        return Mono.error(e);
+                        log.error("Error putting object: ", e);
+                        return Mono.just(ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).<Void>build());
                     }
                 });
     }
@@ -91,8 +95,13 @@ public class S3ProxyController {
             @PathVariable String bucket,
             @PathVariable("key") String key) {
         return Mono.fromCallable(() -> {
-            minio.removeObject(RemoveObjectArgs.builder().bucket(bucket).object(key).build());
-            return ResponseEntity.noContent().build();
+            try {
+                minio.removeObject(RemoveObjectArgs.builder().bucket(bucket).object(key).build());
+                return ResponseEntity.noContent().build();
+            } catch (Exception e) {
+                log.error("Error deleting object: ", e);
+                return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).build();
+            }
         });
     }
 

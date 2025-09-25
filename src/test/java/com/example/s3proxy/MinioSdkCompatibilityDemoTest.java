@@ -8,10 +8,19 @@ import io.minio.RemoveObjectArgs;
 import io.minio.StatObjectArgs;
 import io.minio.StatObjectResponse;
 import io.minio.BucketExistsArgs;
+import io.minio.MakeBucketArgs;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.boot.test.web.server.LocalServerPort;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Primary;
+import org.springframework.test.context.DynamicPropertyRegistry;
+import org.springframework.test.context.DynamicPropertySource;
+import org.testcontainers.containers.GenericContainer;
+import org.testcontainers.junit.jupiter.Container;
+import org.testcontainers.junit.jupiter.Testcontainers;
 
 import java.io.ByteArrayInputStream;
 
@@ -21,18 +30,40 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * Demonstrates MinIO SDK compatibility findings with the S3 Proxy service.
  * This test documents what works, what doesn't, and why.
  */
-@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,
-                properties = {
-                    "MINIO_ENDPOINT=http://localhost:9000", // Mock backend
-                    "MINIO_ACCESS_KEY=minioadmin",
-                    "MINIO_SECRET_KEY=minioadmin"
-                })
+@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
+@Testcontainers
 public class MinioSdkCompatibilityDemoTest {
+
+    @Container
+    static GenericContainer<?> minioContainer = new GenericContainer<>("minio/minio:RELEASE.2023-09-04T19-57-37Z")
+            .withExposedPorts(9000)
+            .withEnv("MINIO_ROOT_USER", "minioadmin")
+            .withEnv("MINIO_ROOT_PASSWORD", "minioadmin")
+            .withCommand("server", "/data");
 
     @LocalServerPort
     private int port;
 
     private MinioClient proxyMinioClient;
+
+    @DynamicPropertySource
+    static void properties(DynamicPropertyRegistry registry) {
+        registry.add("MINIO_ENDPOINT", () -> "http://localhost:" + minioContainer.getMappedPort(9000));
+        registry.add("MINIO_ACCESS_KEY", () -> "minioadmin");
+        registry.add("MINIO_SECRET_KEY", () -> "minioadmin");
+    }
+
+    @TestConfiguration
+    static class TestConfig {
+        @Bean
+        @Primary
+        public MinioClient testMinioClient() {
+            return MinioClient.builder()
+                    .endpoint("http://localhost:" + minioContainer.getMappedPort(9000))
+                    .credentials("minioadmin", "minioadmin")
+                    .build();
+        }
+    }
 
     @BeforeEach
     void setUp() throws Exception {
@@ -41,6 +72,17 @@ public class MinioSdkCompatibilityDemoTest {
                 .endpoint("http://localhost:" + port)
                 .credentials("minioadmin", "minioadmin")
                 .build();
+
+        // Ensure test bucket exists in real MinIO for proxy operations to work
+        MinioClient directMinioClient = MinioClient.builder()
+                .endpoint("http://localhost:" + minioContainer.getMappedPort(9000))
+                .credentials("minioadmin", "minioadmin")
+                .build();
+        
+        String bucket = "test-bucket";
+        if (!directMinioClient.bucketExists(BucketExistsArgs.builder().bucket(bucket).build())) {
+            directMinioClient.makeBucket(MakeBucketArgs.builder().bucket(bucket).build());
+        }
     }
 
     @Test
