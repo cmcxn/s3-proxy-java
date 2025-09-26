@@ -9,6 +9,9 @@ import io.minio.StatObjectArgs;
 import io.minio.StatObjectResponse;
 import io.minio.GetPresignedObjectUrlArgs;
 import io.minio.BucketExistsArgs;
+import io.minio.ListObjectsArgs;
+import io.minio.Result;
+import io.minio.messages.Item;
 import io.minio.http.Method;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -25,7 +28,10 @@ import org.springframework.core.io.buffer.DataBufferUtils;
 
 import java.io.InputStream;
 import java.time.Duration;
+import java.time.format.DateTimeFormatter;
 import java.util.Map;
+import java.util.List;
+import java.util.ArrayList;
 
 /**
  * S3-compatible controller that handles requests at root level for MinIO SDK compatibility.
@@ -65,32 +71,107 @@ public class S3CompatibleController {
         });
     }
 
-    // GET /{bucket} - List objects in bucket (optional, but often expected by SDK)
+    // GET /{bucket} - List objects in bucket (supports prefix, delimiter, etc.)
     @GetMapping(value = "/{bucket}", produces = MediaType.APPLICATION_XML_VALUE)
-    public Mono<ResponseEntity<String>> listObjects(@PathVariable String bucket) {
+    public Mono<ResponseEntity<String>> listObjects(
+            @PathVariable String bucket,
+            @RequestParam(value = "prefix", required = false, defaultValue = "") String prefix,
+            @RequestParam(value = "delimiter", required = false) String delimiter,
+            @RequestParam(value = "max-keys", required = false, defaultValue = "1000") Integer maxKeys,
+            @RequestParam(value = "marker", required = false, defaultValue = "") String marker) {
         return Mono.fromCallable(() -> {
             try {
-                // For now, return a minimal XML response indicating empty bucket
-                // In a full implementation, you'd list objects from MinIO
-                String xmlResponse = """
-                    <?xml version="1.0" encoding="UTF-8"?>
-                    <ListBucketResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">
-                        <Name>%s</Name>
-                        <Prefix></Prefix>
-                        <Marker></Marker>
-                        <MaxKeys>1000</MaxKeys>
-                        <IsTruncated>false</IsTruncated>
-                    </ListBucketResult>
-                    """.formatted(bucket);
+                log.info("Listing objects: bucket={}, prefix='{}', delimiter='{}', maxKeys={}", 
+                    bucket, prefix, delimiter, maxKeys);
+                
+                // Build list objects arguments
+                ListObjectsArgs.Builder argsBuilder = ListObjectsArgs.builder()
+                    .bucket(bucket)
+                    .maxKeys(maxKeys);
+                
+                if (!prefix.isEmpty()) {
+                    argsBuilder.prefix(prefix);
+                }
+                
+                if (delimiter != null && !delimiter.isEmpty()) {
+                    argsBuilder.delimiter(delimiter);
+                }
+                
+                if (!marker.isEmpty()) {
+                    argsBuilder.startAfter(marker);
+                }
+                
+                // Use recursive=true if no delimiter is specified (similar to MinIO Python client behavior)
+                boolean recursive = (delimiter == null || delimiter.isEmpty());
+                argsBuilder.recursive(recursive);
+                
+                // Get objects from MinIO
+                Iterable<Result<Item>> results = minio.listObjects(argsBuilder.build());
+                
+                List<Item> items = new ArrayList<>();
+                for (Result<Item> result : results) {
+                    Item item = result.get();
+                    items.add(item);
+                    // Stop if we've reached maxKeys
+                    if (items.size() >= maxKeys) {
+                        break;
+                    }
+                }
+                
+                // Build S3-compatible XML response
+                StringBuilder xmlBuilder = new StringBuilder();
+                xmlBuilder.append("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
+                xmlBuilder.append("<ListBucketResult xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\">\n");
+                xmlBuilder.append("  <Name>").append(escapeXml(bucket)).append("</Name>\n");
+                xmlBuilder.append("  <Prefix>").append(escapeXml(prefix)).append("</Prefix>\n");
+                xmlBuilder.append("  <Marker>").append(escapeXml(marker)).append("</Marker>\n");
+                xmlBuilder.append("  <MaxKeys>").append(maxKeys).append("</MaxKeys>\n");
+                xmlBuilder.append("  <IsTruncated>").append(items.size() >= maxKeys ? "true" : "false").append("</IsTruncated>\n");
+                
+                if (delimiter != null && !delimiter.isEmpty()) {
+                    xmlBuilder.append("  <Delimiter>").append(escapeXml(delimiter)).append("</Delimiter>\n");
+                }
+                
+                // Add objects to XML
+                for (Item item : items) {
+                    xmlBuilder.append("  <Contents>\n");
+                    xmlBuilder.append("    <Key>").append(escapeXml(item.objectName())).append("</Key>\n");
+                    xmlBuilder.append("    <LastModified>").append(item.lastModified().format(DateTimeFormatter.ISO_INSTANT)).append("</LastModified>\n");
+                    xmlBuilder.append("    <ETag>").append(escapeXml(item.etag())).append("</ETag>\n");
+                    xmlBuilder.append("    <Size>").append(item.size()).append("</Size>\n");
+                    xmlBuilder.append("    <StorageClass>STANDARD</StorageClass>\n");
+                    xmlBuilder.append("    <Owner>\n");
+                    xmlBuilder.append("      <ID>minio</ID>\n");
+                    xmlBuilder.append("      <DisplayName>MinIO User</DisplayName>\n");
+                    xmlBuilder.append("    </Owner>\n");
+                    xmlBuilder.append("  </Contents>\n");
+                }
+                
+                xmlBuilder.append("</ListBucketResult>");
                 
                 HttpHeaders headers = new HttpHeaders();
                 headers.setContentType(MediaType.APPLICATION_XML);
-                return new ResponseEntity<>(xmlResponse, headers, HttpStatus.OK);
+                headers.set("x-amz-request-id", java.util.UUID.randomUUID().toString().replace("-", "").substring(0, 16).toUpperCase());
+                headers.set("x-amz-id-2", java.util.UUID.randomUUID().toString());
+                headers.set("Server", "MinIO");
+                
+                log.info("Successfully listed {} objects for bucket: {}", items.size(), bucket);
+                return new ResponseEntity<>(xmlBuilder.toString(), headers, HttpStatus.OK);
             } catch (Exception e) {
                 log.error("Error listing objects: ", e);
                 return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).build();
             }
         });
+    }
+    
+    // Helper method to escape XML special characters
+    private String escapeXml(String input) {
+        if (input == null) return "";
+        return input.replace("&", "&amp;")
+                   .replace("<", "&lt;")
+                   .replace(">", "&gt;")
+                   .replace("\"", "&quot;")
+                   .replace("'", "&apos;");
     }
 
     // GET /{bucket}/{**key} - S3 compatible GET object
