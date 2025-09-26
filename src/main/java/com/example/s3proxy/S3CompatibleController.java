@@ -29,7 +29,7 @@ import java.util.Map;
 
 /**
  * S3-compatible controller that handles requests at root level for MinIO SDK compatibility.
- * This controller provides the same functionality as S3ProxyController but without the /proxy prefix,
+ * This controller provides S3-compatible endpoints without path prefixes,
  * making it compatible with MinIO SDK which doesn't allow paths in endpoints.
  */
 @RestController
