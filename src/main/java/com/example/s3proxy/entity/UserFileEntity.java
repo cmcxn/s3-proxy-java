@@ -15,8 +15,8 @@ public class UserFileEntity {
     
     @Column(name = "bucket", nullable = false, length = 255)
     private String bucket;
-    
-    @Column(name = "key", nullable = false, length = 1000)
+
+    @Column(name = "\"key\"", nullable = false, length = 1000)
     private String key;
     
     @ManyToOne(fetch = FetchType.LAZY)
