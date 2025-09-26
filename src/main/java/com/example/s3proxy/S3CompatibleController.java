@@ -174,11 +174,14 @@ public class S3CompatibleController {
                    .replace("'", "&apos;");
     }
 
-    // GET /{bucket}/{**key} - S3 compatible GET object
-    @GetMapping(value = "/{bucket}/{key}")
+    // GET /{bucket}/{**key} - S3 compatible GET object  
+    @GetMapping(value = "/{bucket}/**")
     public Mono<ResponseEntity<byte[]>> getObject(
             @PathVariable String bucket,
-            @PathVariable("key") String key) {
+            ServerWebExchange exchange) {
+        String path = exchange.getRequest().getPath().value();
+        // Extract key by removing the bucket part: /bucket/key -> key
+        String key = path.substring(("/" + bucket + "/").length());
         log.info("GET object: bucket={}, key={}", bucket, key);
         return Mono.fromCallable(() -> {
             try (GetObjectResponse obj = minio.getObject(GetObjectArgs.builder()
@@ -201,11 +204,13 @@ public class S3CompatibleController {
     }
 
     // PUT /{bucket}/{**key} - S3 compatible PUT object
-    @PutMapping(value = "/{bucket}/{key}")
+    @PutMapping(value = "/{bucket}/**")
     public Mono<ResponseEntity<Void>> putObject(
             @PathVariable String bucket,
-            @PathVariable("key") String key,
             ServerWebExchange exchange) {
+        String path = exchange.getRequest().getPath().value();
+        // Extract key by removing the bucket part: /bucket/key -> key
+        String key = path.substring(("/" + bucket + "/").length());
         log.info("PUT object: bucket={}, key={}", bucket, key);
         return DataBufferUtils.join(exchange.getRequest().getBody())
                 .flatMap(dataBuffer -> {
@@ -239,10 +244,13 @@ public class S3CompatibleController {
     }
 
     // DELETE /{bucket}/{**key} - S3 compatible DELETE object
-    @DeleteMapping(value = "/{bucket}/{key}")
+    @DeleteMapping(value = "/{bucket}/**")
     public Mono<ResponseEntity<Void>> deleteObject(
             @PathVariable String bucket,
-            @PathVariable("key") String key) {
+            ServerWebExchange exchange) {
+        String path = exchange.getRequest().getPath().value();
+        // Extract key by removing the bucket part: /bucket/key -> key
+        String key = path.substring(("/" + bucket + "/").length());
         log.info("DELETE object: bucket={}, key={}", bucket, key);
         return Mono.fromCallable(() -> {
             try {
@@ -263,10 +271,13 @@ public class S3CompatibleController {
     }
 
     // HEAD /{bucket}/{**key} - S3 compatible HEAD object (for stat operations)
-    @RequestMapping(value = "/{bucket}/{key}", method = RequestMethod.HEAD)
+    @RequestMapping(value = "/{bucket}/**", method = RequestMethod.HEAD)
     public Mono<ResponseEntity<Void>> headObject(
             @PathVariable String bucket,
-            @PathVariable("key") String key) {
+            ServerWebExchange exchange) {
+        String path = exchange.getRequest().getPath().value();
+        // Extract key by removing the bucket part: /bucket/key -> key
+        String key = path.substring(("/" + bucket + "/").length());
         log.info("HEAD object: bucket={}, key={}", bucket, key);
         return Mono.fromCallable(() -> {
             try {
@@ -295,12 +306,14 @@ public class S3CompatibleController {
     // This endpoint is specifically for presigned URL generation via the proxy endpoint
     // Since MinIO SDK will generate presigned URLs pointing to the direct endpoint,
     // we need a separate mechanism for this
-    @GetMapping("/presign/{bucket}/{key}")
+    @GetMapping("/presign/{bucket}/**")
     public Mono<Map<String, String>> presignObject(
             @PathVariable String bucket,
-            @PathVariable("key") String key,
+            ServerWebExchange exchange,
             @RequestParam(defaultValue = "GET") String method,
             @RequestParam(defaultValue = "600") Integer expirySeconds) {
+        String path = exchange.getRequest().getPath().value();
+        String key = path.substring(path.lastIndexOf("/presign/" + bucket + "/") + ("/presign/" + bucket + "/").length());
         log.info("PRESIGN object: bucket={}, key={}, method={}", bucket, key, method);
         return Mono.fromCallable(() -> {
             Method m = switch (method.toUpperCase()) {
