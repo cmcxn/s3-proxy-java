@@ -109,11 +109,38 @@ public class S3CompatibleController {
                 Iterable<Result<Item>> results = minio.listObjects(argsBuilder.build());
                 
                 List<Item> items = new ArrayList<>();
+                List<String> commonPrefixes = new ArrayList<>();
+                boolean isTruncated = false;
+                
                 for (Result<Item> result : results) {
                     Item item = result.get();
+                    
+                    // When using delimiter, handle common prefixes for directory-style listing
+                    if (delimiter != null && !delimiter.isEmpty()) {
+                        String objectName = item.objectName();
+                        // Remove the prefix from the object name
+                        String relativeObjectName = objectName;
+                        if (!prefix.isEmpty() && objectName.startsWith(prefix)) {
+                            relativeObjectName = objectName.substring(prefix.length());
+                        }
+                        
+                        // Check if this is a "directory" (contains delimiter after prefix)
+                        int delimiterIndex = relativeObjectName.indexOf(delimiter);
+                        if (delimiterIndex > 0) {
+                            // This is a common prefix (directory)
+                            String commonPrefix = prefix + relativeObjectName.substring(0, delimiterIndex + delimiter.length());
+                            if (!commonPrefixes.contains(commonPrefix)) {
+                                commonPrefixes.add(commonPrefix);
+                            }
+                            // Don't add to items if it's just a directory marker
+                            continue;
+                        }
+                    }
+                    
                     items.add(item);
                     // Stop if we've reached maxKeys
                     if (items.size() >= maxKeys) {
+                        isTruncated = true;
                         break;
                     }
                 }
@@ -126,7 +153,7 @@ public class S3CompatibleController {
                 xmlBuilder.append("  <Prefix>").append(escapeXml(prefix)).append("</Prefix>\n");
                 xmlBuilder.append("  <Marker>").append(escapeXml(marker)).append("</Marker>\n");
                 xmlBuilder.append("  <MaxKeys>").append(maxKeys).append("</MaxKeys>\n");
-                xmlBuilder.append("  <IsTruncated>").append(items.size() >= maxKeys ? "true" : "false").append("</IsTruncated>\n");
+                xmlBuilder.append("  <IsTruncated>").append(isTruncated ? "true" : "false").append("</IsTruncated>\n");
                 
                 if (delimiter != null && !delimiter.isEmpty()) {
                     xmlBuilder.append("  <Delimiter>").append(escapeXml(delimiter)).append("</Delimiter>\n");
@@ -136,8 +163,19 @@ public class S3CompatibleController {
                 for (Item item : items) {
                     xmlBuilder.append("  <Contents>\n");
                     xmlBuilder.append("    <Key>").append(escapeXml(item.objectName())).append("</Key>\n");
-                    xmlBuilder.append("    <LastModified>").append(item.lastModified().format(DateTimeFormatter.ISO_INSTANT)).append("</LastModified>\n");
-                    xmlBuilder.append("    <ETag>").append(escapeXml(item.etag())).append("</ETag>\n");
+                    // Format LastModified to match MinIO's format with milliseconds
+                    String lastModified = item.lastModified().format(DateTimeFormatter.ISO_INSTANT);
+                    if (!lastModified.contains(".")) {
+                        // Add .000 if there are no milliseconds
+                        lastModified = lastModified.replace("Z", ".000Z");
+                    }
+                    xmlBuilder.append("    <LastModified>").append(lastModified).append("</LastModified>\n");
+                    // ETag should include quotes and not be XML escaped
+                    String etag = item.etag();
+                    if (!etag.startsWith("\"")) {
+                        etag = "\"" + etag + "\"";
+                    }
+                    xmlBuilder.append("    <ETag>").append(etag).append("</ETag>\n");
                     xmlBuilder.append("    <Size>").append(item.size()).append("</Size>\n");
                     xmlBuilder.append("    <StorageClass>STANDARD</StorageClass>\n");
                     xmlBuilder.append("    <Owner>\n");
@@ -145,6 +183,13 @@ public class S3CompatibleController {
                     xmlBuilder.append("      <DisplayName>MinIO User</DisplayName>\n");
                     xmlBuilder.append("    </Owner>\n");
                     xmlBuilder.append("  </Contents>\n");
+                }
+                
+                // Add common prefixes for directory-style listing
+                for (String commonPrefix : commonPrefixes) {
+                    xmlBuilder.append("  <CommonPrefixes>\n");
+                    xmlBuilder.append("    <Prefix>").append(escapeXml(commonPrefix)).append("</Prefix>\n");
+                    xmlBuilder.append("  </CommonPrefixes>\n");
                 }
                 
                 xmlBuilder.append("</ListBucketResult>");
