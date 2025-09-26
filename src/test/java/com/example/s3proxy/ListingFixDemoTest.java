@@ -62,9 +62,11 @@ public class ListingFixDemoTest {
             directMinioClient.makeBucket(MakeBucketArgs.builder().bucket(testBucket).build());
         }
         
-        // Create dedupe-storage bucket for deduplication service
-        if (!directMinioClient.bucketExists(BucketExistsArgs.builder().bucket("dedupe-storage").build())) {
-            directMinioClient.makeBucket(MakeBucketArgs.builder().bucket("dedupe-storage").build());
+        // Create dedupe-storage bucket for deduplication service  
+        // Use the default configured bucket name
+        String dedupeBucket = "dedupe-storage"; // matches default from application.properties
+        if (!directMinioClient.bucketExists(BucketExistsArgs.builder().bucket(dedupeBucket).build())) {
+            directMinioClient.makeBucket(MakeBucketArgs.builder().bucket(dedupeBucket).build());
         }
     }
 

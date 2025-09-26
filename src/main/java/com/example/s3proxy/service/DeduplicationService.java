@@ -11,6 +11,7 @@ import io.minio.GetObjectResponse;
 import io.minio.RemoveObjectArgs;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -29,15 +30,18 @@ public class DeduplicationService {
     private final UserFileRepository userFileRepository;
     private final HashService hashService;
     private final MinioClient minioClient;
+    private final String dedupeStorageBucket;
     
     public DeduplicationService(FileRepository fileRepository, 
                                UserFileRepository userFileRepository,
                                HashService hashService,
-                               MinioClient minioClient) {
+                               MinioClient minioClient,
+                               @Value("${minio.bucket.dedupe-storage}") String dedupeStorageBucket) {
         this.fileRepository = fileRepository;
         this.userFileRepository = userFileRepository;
         this.hashService = hashService;
         this.minioClient = minioClient;
+        this.dedupeStorageBucket = dedupeStorageBucket;
     }
     
     /**
@@ -71,7 +75,7 @@ public class DeduplicationService {
             
             try (InputStream inputStream = new ByteArrayInputStream(data)) {
                 PutObjectArgs.Builder argsBuilder = PutObjectArgs.builder()
-                        .bucket("dedupe-storage") // Use dedicated bucket for content-addressed storage
+                        .bucket(dedupeStorageBucket) // Use configurable bucket for content-addressed storage
                         .object(storagePath)
                         .stream(inputStream, data.length, -1);
                 
@@ -130,7 +134,7 @@ public class DeduplicationService {
         // Get data from MinIO using storage path
         try (GetObjectResponse response = minioClient.getObject(
                 GetObjectArgs.builder()
-                        .bucket("dedupe-storage") // Use dedicated bucket for content-addressed storage
+                        .bucket(dedupeStorageBucket) // Use configurable bucket for content-addressed storage
                         .object(fileEntity.getStoragePath())
                         .build())) {
             
@@ -169,7 +173,7 @@ public class DeduplicationService {
             try {
                 minioClient.removeObject(
                         RemoveObjectArgs.builder()
-                                .bucket("dedupe-storage") // Use dedicated bucket for content-addressed storage
+                                .bucket(dedupeStorageBucket) // Use configurable bucket for content-addressed storage
                                 .object(storagePath)
                                 .build());
             } catch (Exception e) {
