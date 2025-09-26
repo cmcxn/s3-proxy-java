@@ -1,14 +1,14 @@
-# Java MinIO / S3 Proxy (Spring Boot WebFlux)
+# Java S3-Compatible API (Spring Boot WebFlux)
 
-Minimal Java proxy in front of MinIO/S3: GET/PUT/DELETE objects and generate presigned URLs.
+S3-compatible API service built with Spring Boot WebFlux that provides direct S3-compatible endpoints for MinIO/S3 storage.
 
 ## Features
-- ✅ **File Upload (PUT)**: Upload files with automatic content-type detection
-- ✅ **File Download (GET)**: Download files with preserved content-type headers
-- ✅ **File Delete (DELETE)**: Remove files from storage
-- ✅ **Presigned URLs**: Generate secure temporary URLs for direct client access
+- ✅ **S3-Compatible API**: Direct S3-compatible endpoints without proxy path prefixes
+- ✅ **File Operations**: Upload, download, and delete files with preserved content-type headers
+- ✅ **Bucket Operations**: Check bucket existence via HEAD requests
 - ✅ **Binary Support**: Handle all file types including binary data
 - ✅ **Reactive**: Built with Spring WebFlux for non-blocking operations
+- ✅ **MinIO SDK Compatible**: Works with MinIO SDK and other S3 clients
 
 ## Quick start
 ```bash
@@ -20,29 +20,30 @@ export MINIO_SECRET_KEY=minioadmin
 # 2) run
 mvn spring-boot:run
 
-# 3) try APIs
-curl -X PUT --data-binary @file.bin "http://127.0.0.1:8080/proxy/mybucket/path/to/file.bin"
-curl -L "http://127.0.0.1:8080/proxy/mybucket/path/to/file.bin" -o file.bin
-curl -X DELETE "http://127.0.0.1:8080/proxy/mybucket/path/to/file.bin"
-curl "http://127.0.0.1:8080/proxy/presign/mybucket/path/to/file.bin?method=GET&expiry=600"
+# 3) try APIs  
+curl -X PUT --data-binary @file.bin "http://127.0.0.1:8080/mybucket/path/to/file.bin"
+curl -L "http://127.0.0.1:8080/mybucket/path/to/file.bin" -o file.bin
+curl -X DELETE "http://127.0.0.1:8080/mybucket/path/to/file.bin"
 ```
 
 ## API Endpoints
 
+The service provides S3-compatible endpoints:
+
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| PUT | `/proxy/{bucket}/{key}` | Upload file to bucket with given key |
-| GET | `/proxy/{bucket}/{key}` | Download file from bucket |
-| DELETE | `/proxy/{bucket}/{key}` | Delete file from bucket |
-| GET | `/proxy/presign/{bucket}/{key}` | Generate presigned URL |
+| PUT | `/{bucket}/{key}` | Upload file to bucket with given key |
+| GET | `/{bucket}/{key}` | Download file from bucket |
+| DELETE | `/{bucket}/{key}` | Delete file from bucket |
+| HEAD | `/{bucket}` | Check if bucket exists |
+| HEAD | `/{bucket}/{key}` | Get object metadata |
 
 ### Presigned URL Parameters
-- `method`: HTTP method (GET, PUT, DELETE) - default: GET
-- `expiry`: URL expiration time in seconds - default: 600
+- Note: Presigned URL functionality is handled directly by the MinIO client library for S3-compatible access
 
 ## Testing
 
-This project includes comprehensive tests to validate all S3 proxy functionality:
+This project includes tests to validate S3-compatible functionality:
 
 ### Run All Tests
 ```bash
@@ -50,15 +51,12 @@ mvn test
 ```
 
 ### Test Types
-1. **Integration Tests** (`S3ProxyIntegrationTest`): Full end-to-end testing with real Minio containers
-2. **HTTP Client Tests** (`HttpClientProxyTest`): Simulates real-world usage with RestTemplate  
-3. **Simple Tests** (`S3ProxySimpleTest`): Basic file operations validation
+1. **MinIO SDK Compatibility Tests** (`MinioSdkCompatibilityDemoTest`): Tests MinIO SDK integration
+2. **MinIO SDK Unit Tests** (`MinioSdkDirectProxyUnitTest`): Unit tests for MinIO SDK operations
 
 ### Test Coverage
-- ✅ File upload/download with various content types
-- ✅ Binary file handling
-- ✅ Large file operations (1MB+)
-- ✅ Presigned URL generation
+- ✅ MinIO SDK compatibility
+- ✅ S3-compatible API endpoints
 - ✅ Error handling and edge cases
 - ✅ Real Minio integration via Testcontainers
 

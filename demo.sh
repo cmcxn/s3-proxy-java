@@ -1,8 +1,8 @@
 #!/bin/bash
 
-# S3 Proxy Java Demo Script
-echo "🚀 S3 Proxy Java Demo"
-echo "===================="
+# S3-Compatible API Java Demo Script
+echo "🚀 S3-Compatible API Java Demo"
+echo "==============================="
 
 # Build the project
 echo "📦 Building the project..."
@@ -13,13 +13,14 @@ if [ $? -eq 0 ]; then
     echo "✅ Build successful!"
     echo ""
     
-    echo "🏃‍♂️ Starting S3 Proxy Service..."
+    echo "🏃‍♂️ Starting S3-Compatible API Service..."
     echo "Service will be available at: http://localhost:8080"
-    echo "Proxy endpoints:"
-    echo "  PUT    /proxy/{bucket}/{key}"
-    echo "  GET    /proxy/{bucket}/{key}"
-    echo "  DELETE /proxy/{bucket}/{key}"
-    echo "  GET    /proxy/presign/{bucket}/{key}?method={GET|PUT|DELETE}&expiry={seconds}"
+    echo "S3-Compatible endpoints:"
+    echo "  PUT    /{bucket}/{key}"
+    echo "  GET    /{bucket}/{key}"
+    echo "  DELETE /{bucket}/{key}"
+    echo "  HEAD   /{bucket}"
+    echo "  HEAD   /{bucket}/{key}"
     echo ""
     
     echo "💡 Before using the service, make sure you have:"
