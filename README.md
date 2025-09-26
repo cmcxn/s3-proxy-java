@@ -18,7 +18,13 @@ export MINIO_ENDPOINT=http://localhost:9000
 export MINIO_ACCESS_KEY=minioadmin
 export MINIO_SECRET_KEY=minioadmin
 
-# 2) run
+# 2a) run with H2 database (default - embedded)
+mvn spring-boot:run
+
+# 2b) or run with MySQL database
+export SPRING_PROFILES_ACTIVE=mysql
+export MYSQL_USERNAME=root
+export MYSQL_PASSWORD=yourpassword
 mvn spring-boot:run
 
 # 3) try APIs  
@@ -67,6 +73,42 @@ For manual testing with a real Minio instance, see [MANUAL_TESTING.md](MANUAL_TE
 ## File Deduplication
 This service includes file deduplication functionality that eliminates duplicate files automatically. See [DEDUPLICATION.md](DEDUPLICATION.md) for detailed documentation on how the deduplication system works.
 
+## Database Configuration
+The service supports two database backends:
+- **H2** (default): Embedded database suitable for development and testing
+- **MySQL**: Production-ready database with optimized indexes
+
+### Using H2 Database (Default)
+```bash
+# Default configuration - no additional setup required
+mvn spring-boot:run
+```
+
+### Using MySQL Database
+```bash
+# 1. Set up MySQL database
+CREATE DATABASE s3proxy;
+
+# 2. Configure environment variables
+export SPRING_PROFILES_ACTIVE=mysql
+export MYSQL_USERNAME=your_username
+export MYSQL_PASSWORD=your_password
+
+# 3. Run the application
+mvn spring-boot:run
+```
+
+The application will automatically:
+- Create the required tables with optimized indexes
+- Set up proper foreign key relationships
+- Configure connection pooling for optimal performance
+
+### MySQL Configuration Options
+You can customize the MySQL connection by setting these environment variables:
+- `MYSQL_USERNAME`: Database username (default: root)
+- `MYSQL_PASSWORD`: Database password (default: empty)
+- Database URL is configurable in `application-mysql.properties`
+
 ## Production notes
 - Prefer zero-copy streaming for large objects; swap in `DataBufferUtils.write(...)` + `PipedInputStream`.
 - If behind Nginx/Ingress, preserve `Host` header for presigned URL flows.
@@ -74,7 +116,14 @@ This service includes file deduplication functionality that eliminates duplicate
 
 ## Build jar
 ```bash
+# Build fat JAR with all dependencies (includes both H2 and MySQL drivers)
 mvn -B -DskipTests package
+
+# Run with H2 (default)
+java -jar target/s3-proxy-java-0.1.0.jar
+
+# Run with MySQL
+SPRING_PROFILES_ACTIVE=mysql MYSQL_USERNAME=root MYSQL_PASSWORD=yourpassword \
 java -jar target/s3-proxy-java-0.1.0.jar
 ```
 

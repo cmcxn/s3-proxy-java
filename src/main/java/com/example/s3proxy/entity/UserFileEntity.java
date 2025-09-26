@@ -4,9 +4,18 @@ import jakarta.persistence.*;
 import java.time.LocalDateTime;
 
 @Entity
-@Table(name = "user_files", uniqueConstraints = {
-    @UniqueConstraint(name = "uk_bucket_key", columnNames = {"bucket", "key"})
-})
+@Table(name = "user_files", 
+       uniqueConstraints = {
+           @UniqueConstraint(name = "uk_bucket_key", columnNames = {"bucket", "object_key"})
+       },
+       indexes = {
+           @Index(name = "idx_user_files_bucket", columnList = "bucket"),
+           @Index(name = "idx_user_files_object_key", columnList = "object_key"),
+           @Index(name = "idx_user_files_bucket_key", columnList = "bucket,object_key"),
+           @Index(name = "idx_user_files_file_id", columnList = "file_id"),
+           @Index(name = "idx_user_files_created_at", columnList = "created_at")
+       }
+)
 public class UserFileEntity {
     
     @Id
@@ -16,7 +25,7 @@ public class UserFileEntity {
     @Column(name = "bucket", nullable = false, length = 255)
     private String bucket;
 
-    @Column(name = "\"key\"", nullable = false, length = 1000)
+    @Column(name = "object_key", nullable = false, length = 1000)
     private String key;
     
     @ManyToOne(fetch = FetchType.LAZY)
