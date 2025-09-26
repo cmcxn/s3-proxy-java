@@ -23,3 +23,6 @@ Thumbs.db
 
 # Others
 .env
+
+# H2 Database
+data/

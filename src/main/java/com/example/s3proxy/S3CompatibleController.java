@@ -87,41 +87,24 @@ public class S3CompatibleController {
                 log.info("Listing objects: bucket={}, prefix='{}', delimiter='{}', maxKeys={}", 
                     bucket, prefix, delimiter, maxKeys);
                 
-                // Build list objects arguments
-                ListObjectsArgs.Builder argsBuilder = ListObjectsArgs.builder()
-                    .bucket(bucket)
-                    .maxKeys(maxKeys);
+                // Use deduplication service to list objects from database instead of MinIO
+                List<DeduplicationService.ObjectInfo> objectInfos = deduplicationService.listObjects(bucket, prefix);
                 
-                if (!prefix.isEmpty()) {
-                    argsBuilder.prefix(prefix);
-                }
-                
-                if (delimiter != null && !delimiter.isEmpty()) {
-                    argsBuilder.delimiter(delimiter);
-                }
-                
-                if (!marker.isEmpty()) {
-                    argsBuilder.startAfter(marker);
-                }
-                
-                // Use recursive=true if no delimiter is specified (similar to MinIO Python client behavior)
-                boolean recursive = (delimiter == null || delimiter.isEmpty());
-                argsBuilder.recursive(recursive);
-                
-                // Get objects from MinIO
-                Iterable<Result<Item>> results = minio.listObjects(argsBuilder.build());
-                
-                List<Item> items = new ArrayList<>();
+                List<DeduplicationService.ObjectInfo> filteredItems = new ArrayList<>();
                 List<String> commonPrefixes = new ArrayList<>();
                 boolean isTruncated = false;
                 String nextMarker = null;
                 
-                for (Result<Item> result : results) {
-                    Item item = result.get();
+                for (DeduplicationService.ObjectInfo objectInfo : objectInfos) {
+                    String objectName = objectInfo.getKey();
+                    
+                    // Skip objects that come before the marker
+                    if (!marker.isEmpty() && objectName.compareTo(marker) <= 0) {
+                        continue;
+                    }
                     
                     // When using delimiter, handle common prefixes for directory-style listing
                     if (delimiter != null && !delimiter.isEmpty()) {
-                        String objectName = item.objectName();
                         // Remove the prefix from the object name
                         String relativeObjectName = objectName;
                         if (!prefix.isEmpty() && objectName.startsWith(prefix)) {
@@ -141,11 +124,11 @@ public class S3CompatibleController {
                         }
                     }
                     
-                    items.add(item);
+                    filteredItems.add(objectInfo);
                     // Stop if we've reached maxKeys
-                    if (items.size() >= maxKeys) {
+                    if (filteredItems.size() >= maxKeys) {
                         isTruncated = true;
-                        nextMarker = item.objectName(); // Set next marker to the last object processed
+                        nextMarker = objectName; // Set next marker to the last object processed
                         break;
                     }
                 }
@@ -170,23 +153,27 @@ public class S3CompatibleController {
                 }
                 
                 // Add objects to XML
-                for (Item item : items) {
+                for (DeduplicationService.ObjectInfo objectInfo : filteredItems) {
                     xmlBuilder.append("  <Contents>\n");
-                    xmlBuilder.append("    <Key>").append(escapeXml(item.objectName())).append("</Key>\n");
+                    xmlBuilder.append("    <Key>").append(escapeXml(objectInfo.getKey())).append("</Key>\n");
+                    
                     // Format LastModified to match MinIO's format with milliseconds
-                    String lastModified = item.lastModified().format(DateTimeFormatter.ISO_INSTANT);
+                    String lastModified = objectInfo.getLastModified()
+                            .atZone(java.time.ZoneOffset.UTC)
+                            .format(java.time.format.DateTimeFormatter.ISO_INSTANT);
                     if (!lastModified.contains(".")) {
                         // Add .000 if there are no milliseconds
                         lastModified = lastModified.replace("Z", ".000Z");
                     }
                     xmlBuilder.append("    <LastModified>").append(lastModified).append("</LastModified>\n");
+                    
                     // ETag should include quotes and not be XML escaped
-                    String etag = item.etag();
+                    String etag = objectInfo.getEtag().substring(0, Math.min(16, objectInfo.getEtag().length()));
                     if (!etag.startsWith("\"")) {
                         etag = "\"" + etag + "\"";
                     }
                     xmlBuilder.append("    <ETag>").append(etag).append("</ETag>\n");
-                    xmlBuilder.append("    <Size>").append(item.size()).append("</Size>\n");
+                    xmlBuilder.append("    <Size>").append(objectInfo.getSize()).append("</Size>\n");
                     xmlBuilder.append("    <StorageClass>STANDARD</StorageClass>\n");
                     xmlBuilder.append("    <Owner>\n");
                     xmlBuilder.append("      <ID>minio</ID>\n");
@@ -210,7 +197,7 @@ public class S3CompatibleController {
                 headers.set("x-amz-id-2", java.util.UUID.randomUUID().toString());
                 headers.set("Server", "MinIO");
                 
-                log.info("Successfully listed {} objects for bucket: {}", items.size(), bucket);
+                log.info("Successfully listed {} objects for bucket: {}", filteredItems.size(), bucket);
                 return new ResponseEntity<>(xmlBuilder.toString(), headers, HttpStatus.OK);
             } catch (Exception e) {
                 log.error("Error listing objects: ", e);
