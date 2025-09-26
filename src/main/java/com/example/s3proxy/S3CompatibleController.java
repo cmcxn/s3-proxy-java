@@ -1,5 +1,6 @@
 package com.example.s3proxy;
 
+import com.example.s3proxy.service.DeduplicationService;
 import io.minio.MinioClient;
 import io.minio.GetObjectArgs;
 import io.minio.GetObjectResponse;
@@ -42,9 +43,11 @@ import java.util.ArrayList;
 public class S3CompatibleController {
     private static final Logger log = LoggerFactory.getLogger(S3CompatibleController.class);
     private final MinioClient minio;
+    private final DeduplicationService deduplicationService;
 
-    public S3CompatibleController(MinioClient minio) {
+    public S3CompatibleController(MinioClient minio, DeduplicationService deduplicationService) {
         this.minio = minio;
+        this.deduplicationService = deduplicationService;
     }
 
     // HEAD /{bucket} - Check if bucket exists (required by MinIO SDK)
@@ -235,24 +238,30 @@ public class S3CompatibleController {
         // Extract key by removing the bucket part: /bucket/key -> key
         String key = path.substring(("/" + bucket + "/").length());
         log.info("GET object: bucket={}, key={}", bucket, key);
+        
         return Mono.fromCallable(() -> {
-            try (GetObjectResponse obj = minio.getObject(GetObjectArgs.builder()
-                    .bucket(bucket).object(key).build())) {
-                byte[] data = obj.readAllBytes();
-                HttpHeaders h = new HttpHeaders();
-                if (obj.headers().get("Content-Type") != null) {
-                    h.setContentType(MediaType.parseMediaType(obj.headers().get("Content-Type")));
+            try {
+                DeduplicationService.FileData fileData = deduplicationService.getObject(bucket, key);
+                if (fileData == null) {
+                    return ResponseEntity.notFound().build();
                 }
-                // Add proper S3 headers
-                h.set("ETag", obj.headers().get("ETag"));
-                h.set("Last-Modified", obj.headers().get("Last-Modified"));
+                
+                HttpHeaders h = new HttpHeaders();
+                if (fileData.getContentType() != null) {
+                    h.setContentType(MediaType.parseMediaType(fileData.getContentType()));
+                }
+                // Add proper S3 headers using file hash
+                h.set("ETag", "\"" + fileData.getHash().substring(0, 16) + "\"");
                 h.set("x-amz-request-id", java.util.UUID.randomUUID().toString().replace("-", "").substring(0, 16).toUpperCase());
                 h.set("x-amz-id-2", java.util.UUID.randomUUID().toString());
                 h.set("Server", "MinIO");
                 
-                return new ResponseEntity<>(data, h, HttpStatus.OK);
+                return new ResponseEntity<>(fileData.getData(), h, HttpStatus.OK);
+            } catch (Exception e) {
+                log.error("Error getting object: ", e);
+                return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).build();
             }
-        }).onErrorReturn(ResponseEntity.notFound().build());
+        });
     }
 
     // PUT /{bucket}/{**key} - S3 compatible PUT object
@@ -271,18 +280,14 @@ public class S3CompatibleController {
                         dataBuffer.read(bytes);
                         DataBufferUtils.release(dataBuffer);
 
-                        try (InputStream is = new java.io.ByteArrayInputStream(bytes)) {
-                            String contentType = exchange.getRequest().getHeaders().getFirst("Content-Type");
-                            PutObjectArgs.Builder b = PutObjectArgs.builder()
-                                    .bucket(bucket).object(key)
-                                    .stream(is, bytes.length, -1);
-                            if (contentType != null) b.contentType(contentType);
-                            minio.putObject(b.build());
-                        }
+                        String contentType = exchange.getRequest().getHeaders().getFirst("Content-Type");
+                        
+                        // Use deduplication service instead of direct MinIO upload
+                        String etag = deduplicationService.putObject(bucket, key, bytes, contentType);
                         
                         // Return proper S3 response headers
                         HttpHeaders headers = new HttpHeaders();
-                        headers.set("ETag", "\"" + Integer.toHexString(java.util.Arrays.hashCode(bytes)) + "\"");
+                        headers.set("ETag", "\"" + etag + "\"");
                         headers.set("x-amz-request-id", java.util.UUID.randomUUID().toString().replace("-", "").substring(0, 16).toUpperCase());
                         headers.set("x-amz-id-2", java.util.UUID.randomUUID().toString());
                         headers.set("Server", "MinIO");
@@ -306,7 +311,11 @@ public class S3CompatibleController {
         log.info("DELETE object: bucket={}, key={}", bucket, key);
         return Mono.fromCallable(() -> {
             try {
-                minio.removeObject(RemoveObjectArgs.builder().bucket(bucket).object(key).build());
+                boolean deleted = deduplicationService.deleteObject(bucket, key);
+                
+                if (!deleted) {
+                    return new ResponseEntity<>(HttpStatus.NOT_FOUND);
+                }
                 
                 // Return proper S3 headers for delete
                 HttpHeaders headers = new HttpHeaders();
@@ -333,16 +342,17 @@ public class S3CompatibleController {
         log.info("HEAD object: bucket={}, key={}", bucket, key);
         return Mono.fromCallable(() -> {
             try {
-                StatObjectResponse stat = minio.statObject(
-                        StatObjectArgs.builder().bucket(bucket).object(key).build());
+                DeduplicationService.FileData fileData = deduplicationService.getObject(bucket, key);
+                if (fileData == null) {
+                    return new ResponseEntity<>(HttpStatus.NOT_FOUND);
+                }
                 
                 HttpHeaders headers = new HttpHeaders();
-                headers.setContentLength(stat.size());
-                if (stat.contentType() != null) {
-                    headers.setContentType(MediaType.parseMediaType(stat.contentType()));
+                headers.setContentLength(fileData.getSize());
+                if (fileData.getContentType() != null) {
+                    headers.setContentType(MediaType.parseMediaType(fileData.getContentType()));
                 }
-                headers.set("Last-Modified", stat.lastModified().format(java.time.format.DateTimeFormatter.RFC_1123_DATE_TIME));
-                headers.set("ETag", stat.etag());
+                headers.set("ETag", "\"" + fileData.getHash().substring(0, 16) + "\"");
                 headers.set("x-amz-request-id", java.util.UUID.randomUUID().toString().replace("-", "").substring(0, 16).toUpperCase());
                 headers.set("x-amz-id-2", java.util.UUID.randomUUID().toString());
                 headers.set("Server", "MinIO");
