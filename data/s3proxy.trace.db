@@ -1,0 +1,5 @@
+2025-09-26 06:28:24.571206Z jdbc[3]: exception
+org.h2.jdbc.JdbcSQLSyntaxErrorException: Syntax error in SQL statement "\000a    alter table if exists user_files \000a       add constraint uk_bucket_key unique (bucket, [*]key)"; expected "identifier"; SQL statement:
+
+    alter table if exists user_files 
+       add constraint uk_bucket_key unique (bucket, key) [42001-224]
