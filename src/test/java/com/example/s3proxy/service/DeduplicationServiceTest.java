@@ -36,7 +36,7 @@ class DeduplicationServiceTest {
     void setUp() {
         MockitoAnnotations.openMocks(this);
         deduplicationService = new DeduplicationService(
-            fileRepository, userFileRepository, hashService, minioClient
+            fileRepository, userFileRepository, hashService, minioClient, "test-dedupe-storage"
         );
     }
 
