@@ -111,6 +111,7 @@ public class S3CompatibleController {
                 List<Item> items = new ArrayList<>();
                 List<String> commonPrefixes = new ArrayList<>();
                 boolean isTruncated = false;
+                String nextMarker = null;
                 
                 for (Result<Item> result : results) {
                     Item item = result.get();
@@ -141,6 +142,7 @@ public class S3CompatibleController {
                     // Stop if we've reached maxKeys
                     if (items.size() >= maxKeys) {
                         isTruncated = true;
+                        nextMarker = item.objectName(); // Set next marker to the last object processed
                         break;
                     }
                 }
@@ -157,6 +159,11 @@ public class S3CompatibleController {
                 
                 if (delimiter != null && !delimiter.isEmpty()) {
                     xmlBuilder.append("  <Delimiter>").append(escapeXml(delimiter)).append("</Delimiter>\n");
+                }
+                
+                // Add NextMarker when results are truncated
+                if (isTruncated && nextMarker != null) {
+                    xmlBuilder.append("  <NextMarker>").append(escapeXml(nextMarker)).append("</NextMarker>\n");
                 }
                 
                 // Add objects to XML
