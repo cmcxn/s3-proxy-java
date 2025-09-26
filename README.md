@@ -4,6 +4,7 @@ S3-compatible API service built with Spring Boot WebFlux that provides direct S3
 
 ## Features
 - ✅ **S3-Compatible API**: Direct S3-compatible endpoints without proxy path prefixes
+- ✅ **File Deduplication**: Content-addressable storage with reference counting to eliminate duplicate files
 - ✅ **File Operations**: Upload, download, and delete files with preserved content-type headers
 - ✅ **Bucket Operations**: Check bucket existence via HEAD requests
 - ✅ **Binary Support**: Handle all file types including binary data
@@ -62,6 +63,9 @@ mvn test
 
 ## Manual Testing
 For manual testing with a real Minio instance, see [MANUAL_TESTING.md](MANUAL_TESTING.md).
+
+## File Deduplication
+This service includes file deduplication functionality that eliminates duplicate files automatically. See [DEDUPLICATION.md](DEDUPLICATION.md) for detailed documentation on how the deduplication system works.
 
 ## Production notes
 - Prefer zero-copy streaming for large objects; swap in `DataBufferUtils.write(...)` + `PipedInputStream`.
