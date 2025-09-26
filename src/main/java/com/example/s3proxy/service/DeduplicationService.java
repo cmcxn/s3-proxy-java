@@ -16,6 +16,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.io.ByteArrayInputStream;
 import java.io.InputStream;
+import java.util.List;
 import java.util.Optional;
 
 @Service
@@ -182,6 +183,54 @@ public class DeduplicationService {
         }
         
         return true;
+    }
+    
+    /**
+     * List objects in a bucket with optional prefix filtering
+     */
+    public List<ObjectInfo> listObjects(String bucket, String prefix) throws Exception {
+        log.info("Listing objects: bucket={}, prefix='{}'", bucket, prefix);
+        
+        List<UserFileEntity> userFiles;
+        if (prefix != null && !prefix.isEmpty()) {
+            userFiles = userFileRepository.findByBucketAndKeyStartingWith(bucket, prefix);
+        } else {
+            userFiles = userFileRepository.findByBucketOrderByKey(bucket);
+        }
+        
+        log.debug("Found {} user files", userFiles.size());
+        
+        return userFiles.stream()
+                .map(uf -> new ObjectInfo(
+                    uf.getKey(),
+                    uf.getFile().getSize(),
+                    uf.getCreatedAt(),
+                    uf.getFile().getHashValue(),
+                    uf.getFile().getContentType()
+                ))
+                .collect(java.util.stream.Collectors.toList());
+    }
+    
+    public static class ObjectInfo {
+        private final String key;
+        private final long size;
+        private final java.time.LocalDateTime lastModified;
+        private final String etag;
+        private final String contentType;
+        
+        public ObjectInfo(String key, long size, java.time.LocalDateTime lastModified, String etag, String contentType) {
+            this.key = key;
+            this.size = size;
+            this.lastModified = lastModified;
+            this.etag = etag;
+            this.contentType = contentType;
+        }
+        
+        public String getKey() { return key; }
+        public long getSize() { return size; }
+        public java.time.LocalDateTime getLastModified() { return lastModified; }
+        public String getEtag() { return etag; }
+        public String getContentType() { return contentType; }
     }
     
     public static class FileData {
