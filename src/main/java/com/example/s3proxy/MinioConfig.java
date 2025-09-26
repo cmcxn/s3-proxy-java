@@ -10,9 +10,9 @@ public class MinioConfig {
     
     @Bean
     MinioClient minioClient(
-            @Value("${MINIO_ENDPOINT:http://127.0.0.1:9000}") String endpoint,
-            @Value("${MINIO_ACCESS_KEY:minioadmin}") String accessKey,
-            @Value("${MINIO_SECRET_KEY:minioadmin}") String secretKey) {
+            @Value("${minio.endpoint}") String endpoint,
+            @Value("${minio.access-key}") String accessKey,
+            @Value("${minio.secret-key}") String secretKey) {
         return MinioClient.builder()
                 .endpoint(endpoint)
                 .credentials(accessKey, secretKey)
