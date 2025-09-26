@@ -76,10 +76,13 @@ This ensures identical files are stored only once, regardless of their original 
 
 ## Configuration
 
-The deduplication feature uses an embedded H2 database for metadata storage. Database configuration is in `application.properties`:
+The deduplication feature supports two database backends:
+
+### H2 Database (Default)
+Uses an embedded H2 database for metadata storage. Database configuration is in `application.properties`:
 
 ```properties
-# Database Configuration
+# H2 Database Configuration (default)
 spring.datasource.url=jdbc:h2:file:./data/s3proxy;AUTO_SERVER=TRUE;DB_CLOSE_ON_EXIT=FALSE
 spring.datasource.driverClassName=org.h2.Driver
 spring.datasource.username=sa
@@ -89,22 +92,105 @@ spring.datasource.password=
 spring.jpa.hibernate.ddl-auto=update
 ```
 
+### MySQL Database (Production)
+For production deployments, you can use MySQL with optimized indexes and connection pooling:
+
+```bash
+# Enable MySQL profile
+export SPRING_PROFILES_ACTIVE=mysql
+export MYSQL_USERNAME=your_username
+export MYSQL_PASSWORD=your_password
+```
+
+MySQL configuration is in `application-mysql.properties` with optimized settings:
+
+```properties
+# MySQL Database Configuration
+spring.datasource.url=jdbc:mysql://localhost:3306/s3proxy?createDatabaseIfNotExist=true&useUnicode=true&characterEncoding=UTF-8&serverTimezone=UTC
+spring.datasource.driverClassName=com.mysql.cj.jdbc.Driver
+
+# Connection pooling for optimal performance
+spring.datasource.hikari.maximum-pool-size=20
+spring.datasource.hikari.minimum-idle=5
+
+# JPA Configuration for MySQL
+spring.jpa.database-platform=org.hibernate.dialect.MySQLDialect
+spring.jpa.hibernate.ddl-auto=update
+```
+
+#### MySQL Optimized Indexes
+The MySQL configuration includes optimized indexes for all query patterns:
+
+**Files Table:**
+- `idx_files_hash_value` - Unique hash lookups (primary deduplication operation)
+- `idx_files_reference_count` - Cleanup operations for unreferenced files
+- `idx_files_created_at` - Time-based queries and analytics
+- `idx_files_size` - Size-based filtering and statistics
+
+**User Files Table:**
+- `idx_user_files_bucket` - Fast bucket-level operations
+- `idx_user_files_object_key` - Quick object key lookups
+- `idx_user_files_bucket_key` - Combined queries (most common access pattern)
+- `idx_user_files_file_id` - Foreign key performance for joins
+- `idx_user_files_created_at` - Time-based analytics
+
+See [MYSQL_CONFIGURATION.md](MYSQL_CONFIGURATION.md) for detailed MySQL setup instructions.
+
 ## Monitoring
 
-You can monitor deduplication effectiveness by:
+You can monitor deduplication effectiveness by connecting to your database:
 
-1. Accessing H2 Console at http://localhost:8080/h2-console
-2. Viewing database statistics:
-   - Total unique files: `SELECT COUNT(*) FROM files`
-   - Total user mappings: `SELECT COUNT(*) FROM user_files`
-   - Storage savings: Compare total mappings vs unique files
+### H2 Database (Default)
+1. Access H2 Console at http://localhost:8080/h2-console (when running with H2)
+2. Use JDBC URL: `jdbc:h2:file:./data/s3proxy`
+
+### MySQL Database
+1. Connect using MySQL client: `mysql -u username -p s3proxy`
+2. Or use any MySQL GUI tool (MySQL Workbench, phpMyAdmin, etc.)
+
+### Common Monitoring Queries
+
+```sql
+-- Total unique files stored
+SELECT COUNT(*) as unique_files FROM files;
+
+-- Total user file mappings
+SELECT COUNT(*) as total_mappings FROM user_files;
+
+-- Storage efficiency (higher ratio = better deduplication)
+SELECT 
+    (SELECT COUNT(*) FROM user_files) as total_mappings,
+    (SELECT COUNT(*) FROM files) as unique_files,
+    ROUND((SELECT COUNT(*) FROM user_files) / (SELECT COUNT(*) FROM files), 2) as efficiency_ratio;
+
+-- Top buckets by file count
+SELECT bucket, COUNT(*) as file_count 
+FROM user_files 
+GROUP BY bucket 
+ORDER BY file_count DESC 
+LIMIT 10;
+
+-- Files by size distribution
+SELECT 
+    CASE 
+        WHEN size < 1024 THEN 'Under 1KB'
+        WHEN size < 1048576 THEN '1KB-1MB'
+        WHEN size < 104857600 THEN '1MB-100MB'
+        ELSE 'Over 100MB'
+    END as size_category,
+    COUNT(*) as file_count,
+    SUM(size) as total_bytes
+FROM files 
+GROUP BY size_category;
+```
 
 ## Limitations
 
-1. **Single Instance**: Current implementation assumes single application instance
-2. **Memory Usage**: File content is temporarily loaded into memory during processing
-3. **Database**: Uses embedded H2 database (suitable for development/testing)
-4. **Storage Backend**: Requires dedicated MinIO bucket for content-addressed storage
+1. **Memory Usage**: File content is temporarily loaded into memory during processing
+2. **Storage Backend**: Requires dedicated MinIO bucket for content-addressed storage
+3. **Database Choice**: 
+   - **H2**: Single application instance, suitable for development/testing
+   - **MySQL**: Production-ready, supports multiple instances with proper setup
 
 ## Future Enhancements
 

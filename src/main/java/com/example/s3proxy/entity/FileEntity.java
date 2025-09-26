@@ -4,7 +4,14 @@ import jakarta.persistence.*;
 import java.time.LocalDateTime;
 
 @Entity
-@Table(name = "files")
+@Table(name = "files", 
+       indexes = {
+           @Index(name = "idx_files_hash_value", columnList = "hash_value", unique = true),
+           @Index(name = "idx_files_reference_count", columnList = "reference_count"),
+           @Index(name = "idx_files_created_at", columnList = "created_at"),
+           @Index(name = "idx_files_size", columnList = "size")
+       }
+)
 public class FileEntity {
     
     @Id
