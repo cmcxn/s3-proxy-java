@@ -61,11 +61,12 @@ public class DeduplicationService {
         String etag;
         
         if (existingFile.isPresent()) {
-            // File exists - increment reference count
+            // File exists - increment reference count atomically
             log.info("File already exists in storage, incrementing reference count: hash={}", hash);
             fileEntity = existingFile.get();
-            fileEntity.incrementReferenceCount();
-            fileRepository.save(fileEntity);
+            fileRepository.incrementReferenceCount(fileEntity.getId());
+            // Refresh entity to get updated reference count
+            fileEntity = fileRepository.findById(fileEntity.getId()).orElse(fileEntity);
             etag = hash.substring(0, 16); // Use hash prefix as ETag
         } else {
             // File doesn't exist - store in MinIO and create database record
@@ -95,11 +96,10 @@ public class DeduplicationService {
         // Create or update user file mapping
         Optional<UserFileEntity> existingUserFile = userFileRepository.findByBucketAndKey(bucket, key);
         if (existingUserFile.isPresent()) {
-            // Update existing mapping - first decrement old file reference
+            // Update existing mapping - first decrement old file reference atomically
             UserFileEntity oldMapping = existingUserFile.get();
             FileEntity oldFile = oldMapping.getFile();
-            oldFile.decrementReferenceCount();
-            fileRepository.save(oldFile);
+            fileRepository.decrementReferenceCount(oldFile.getId());
             
             // Update to new file
             oldMapping.setFile(fileEntity);
@@ -110,8 +110,10 @@ public class DeduplicationService {
             userFileRepository.save(userFile);
         }
         
+        // Get the final entity state for logging
+        FileEntity finalEntity = fileRepository.findById(fileEntity.getId()).orElse(fileEntity);
         log.info("Successfully stored file: bucket={}, key={}, hash={}, new_reference_count={}", 
-                bucket, key, hash, fileEntity.getReferenceCount());
+                bucket, key, hash, finalEntity.getReferenceCount());
         
         return etag;
     }
@@ -162,12 +164,14 @@ public class DeduplicationService {
         // Remove user file mapping
         userFileRepository.delete(userFile.get());
         
-        // Decrement reference count
-        fileEntity.decrementReferenceCount();
-        fileRepository.save(fileEntity);
+        // Decrement reference count atomically
+        int updatedRows = fileRepository.decrementReferenceCount(fileEntity.getId());
+        
+        // Refresh entity to get updated reference count
+        fileEntity = fileRepository.findById(fileEntity.getId()).orElse(null);
         
         // If reference count reaches 0, delete from MinIO and database
-        if (fileEntity.getReferenceCount() == 0) {
+        if (fileEntity != null && fileEntity.getReferenceCount() == 0) {
             log.info("Reference count reached 0, deleting from MinIO: hash={}, storage_path={}", hash, storagePath);
             
             try {
@@ -182,8 +186,10 @@ public class DeduplicationService {
             
             fileRepository.delete(fileEntity);
             log.info("File completely removed: hash={}", hash);
-        } else {
+        } else if (fileEntity != null) {
             log.info("File still has {} references, keeping in storage: hash={}", fileEntity.getReferenceCount(), hash);
+        } else {
+            log.warn("FileEntity became null after decrement operation for hash={}", hash);
         }
         
         return true;
