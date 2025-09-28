@@ -38,4 +38,19 @@ public interface UserFileRepository extends JpaRepository<UserFileEntity, Long> 
     // Find all user files in a bucket
     @Query("SELECT uf FROM UserFileEntity uf WHERE uf.bucket = :bucket ORDER BY uf.key")
     List<UserFileEntity> findByBucketOrderByKey(@Param("bucket") String bucket);
+
+
+    @Modifying
+    @Query("DELETE FROM UserFileEntity uf WHERE uf.bucket = :bucket AND uf.keySha256 = :keySha256  ")
+    int deleteByBucketAndKeySha256AndKey(@Param("bucket") String bucket,
+                                         @Param("keySha256") String keySha256
+                                         );
+
+    /**
+     * Convenience method that calculates SHA256 automatically for deletion
+     */
+    default int deleteByBucketAndKey(String bucket, String key) {
+        String keySha256 = Sha256Utils.calculateSha256(key);
+        return deleteByBucketAndKeySha256AndKey(bucket, keySha256);
+    }
 }

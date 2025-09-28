@@ -156,17 +156,18 @@ public class DeduplicationService {
             log.debug("File not found for deletion: bucket={}, key={}", bucket, key);
             return false;
         }
-        
-        FileEntity fileEntity = userFile.get().getFile();
+
+        UserFileEntity entity = userFile.get();
+        FileEntity fileEntity = entity.getFile();
         String hash = fileEntity.getHashValue();
         String storagePath = fileEntity.getStoragePath();
         
         // Remove user file mapping
-        userFileRepository.delete(userFile.get());
-        
+        int c = userFileRepository.deleteByBucketAndKey(bucket, key);
+        log.info("Successfully deleted file: bucket={}, key={} change = {}", bucket, key,c);
         // Decrement reference count atomically
         int updatedRows = fileRepository.decrementReferenceCount(fileEntity.getId());
-        
+        log.info("decrementReferenceCount={}", updatedRows);
         // Refresh entity to get updated reference count
         fileEntity = fileRepository.findById(fileEntity.getId()).orElse(null);
         
