@@ -78,28 +78,5 @@ class DeduplicationIntegrationTest {
         assertTrue(found.isPresent());
         assertEquals(savedUserFile.getId(), found.get().getId());
     }
-    
-    @Test
-    void testReferenceCountOperations() {
-        // Create a file with initial reference count of 1
-        FileEntity file = new FileEntity("ref-test-hash", 300L, "text/plain", "ref-test-path");
-        FileEntity saved = fileRepository.save(file);
-        assertEquals(1, saved.getReferenceCount());
-        
-        // Test increment
-        saved.incrementReferenceCount();
-        fileRepository.save(saved);
-        
-        FileEntity updated = fileRepository.findById(saved.getId()).orElse(null);
-        assertNotNull(updated);
-        assertEquals(2, updated.getReferenceCount());
-        
-        // Test decrement
-        updated.decrementReferenceCount();
-        fileRepository.save(updated);
-        
-        FileEntity decremented = fileRepository.findById(saved.getId()).orElse(null);
-        assertNotNull(decremented);
-        assertEquals(1, decremented.getReferenceCount());
-    }
+
 }

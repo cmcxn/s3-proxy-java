@@ -77,16 +77,5 @@ public class FileEntity {
     
     public LocalDateTime getUpdatedAt() { return updatedAt; }
     public void setUpdatedAt(LocalDateTime updatedAt) { this.updatedAt = updatedAt; }
-    
-    public void incrementReferenceCount() {
-        this.referenceCount++;
-        this.updatedAt = LocalDateTime.now();
-    }
-    
-    public void decrementReferenceCount() {
-        if (this.referenceCount > 0) {
-            this.referenceCount--;
-        }
-        this.updatedAt = LocalDateTime.now();
-    }
+
 }
