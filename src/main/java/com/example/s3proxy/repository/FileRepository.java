@@ -14,11 +14,11 @@ public interface FileRepository extends JpaRepository<FileEntity, Long> {
     
     Optional<FileEntity> findByHashValue(String hashValue);
     
-    @Modifying
+    @Modifying(clearAutomatically = true)
     @Query("UPDATE FileEntity f SET f.referenceCount = f.referenceCount + 1, f.updatedAt = CURRENT_TIMESTAMP WHERE f.id = :id")
     void incrementReferenceCount(@Param("id") Long id);
     
-    @Modifying
+    @Modifying(clearAutomatically = true)
     @Query("UPDATE FileEntity f SET f.referenceCount = f.referenceCount - 1, f.updatedAt = CURRENT_TIMESTAMP WHERE f.id = :id AND f.referenceCount > 0")
     int decrementReferenceCount(@Param("id") Long id);
 
