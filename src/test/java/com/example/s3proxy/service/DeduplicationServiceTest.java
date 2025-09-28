@@ -80,6 +80,7 @@ class DeduplicationServiceTest {
         
         FileEntity existingFile = new FileEntity(expectedHash, (long) data.length, contentType, "dedupe-data/" + expectedHash);
         existingFile.setReferenceCount(1);
+        existingFile.setId(1L); // Set a proper ID
         
         when(hashService.calculateSHA256(data)).thenReturn(expectedHash);
         when(fileRepository.findByHashValue(expectedHash)).thenReturn(Optional.of(existingFile));
@@ -87,15 +88,25 @@ class DeduplicationServiceTest {
         when(fileRepository.save(existingFile)).thenReturn(existingFile);
         when(userFileRepository.save(any(UserFileEntity.class))).thenReturn(new UserFileEntity());
         
+        // Mock the atomic increment and subsequent fetch
+        doNothing().when(fileRepository).incrementReferenceCount(1L);
+        FileEntity refreshedFile = new FileEntity(expectedHash, (long) data.length, contentType, "dedupe-data/" + expectedHash);
+        refreshedFile.setReferenceCount(2);
+        refreshedFile.setId(1L);
+        FileEntity finalFile = new FileEntity(expectedHash, (long) data.length, contentType, "dedupe-data/" + expectedHash);
+        finalFile.setReferenceCount(2);
+        finalFile.setId(1L);
+        when(fileRepository.findById(1L)).thenReturn(Optional.of(refreshedFile), Optional.of(finalFile));
+        
         // Act
         String etag = deduplicationService.putObject(bucket, key, data, contentType);
         
         // Assert
         assertEquals(expectedHash.substring(0, 16), etag);
-        assertEquals(2, existingFile.getReferenceCount()); // Should be incremented
         verify(hashService).calculateSHA256(data);
         verify(fileRepository).findByHashValue(expectedHash);
-        verify(fileRepository).save(existingFile);
+        verify(fileRepository).incrementReferenceCount(1L);
+        verify(fileRepository, times(2)).findById(1L);
         verify(userFileRepository).save(any(UserFileEntity.class));
         verify(minioClient, never()).putObject(any()); // Should not upload again
     }
