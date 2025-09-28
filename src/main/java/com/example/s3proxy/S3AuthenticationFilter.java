@@ -1,8 +1,8 @@
 package com.example.s3proxy;
 
+import com.example.s3proxy.service.MinioCredentialValidator;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.core.annotation.Order;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Component;
@@ -16,7 +16,7 @@ import java.util.Base64;
 
 /**
  * Simple authentication filter for S3-compatible endpoints.
- * Validates basic authentication or AWS signature against configured credentials.
+ * Validates basic authentication or AWS signature against MinIO server directly.
  */
 @Component
 @Order(-100) // Run before other filters
@@ -24,11 +24,11 @@ public class S3AuthenticationFilter implements WebFilter {
     
     private static final Logger log = LoggerFactory.getLogger(S3AuthenticationFilter.class);
     
-    @Value("${MINIO_ACCESS_KEY:minioadmin}")
-    private String expectedAccessKey;
+    private final MinioCredentialValidator credentialValidator;
     
-    @Value("${MINIO_SECRET_KEY:minioadmin}")
-    private String expectedSecretKey;
+    public S3AuthenticationFilter(MinioCredentialValidator credentialValidator) {
+        this.credentialValidator = credentialValidator;
+    }
 
     @Override
     public Mono<Void> filter(ServerWebExchange exchange, WebFilterChain chain) {
@@ -92,12 +92,24 @@ public class S3AuthenticationFilter implements WebFilter {
             // Extract access key from AWS signature
             // Format: AWS4-HMAC-SHA256 Credential=ACCESS_KEY/date/region/service/aws4_request, SignedHeaders=..., Signature=...
             String credentialPart = extractCredentialFromAwsAuth(authHeader);
-            if (credentialPart != null && credentialPart.startsWith(expectedAccessKey + "/")) {
-                log.debug("AWS signature authentication passed for access key: {}", expectedAccessKey);
-                return chain.filter(exchange);
+            if (credentialPart != null) {
+                String[] credParts = credentialPart.split("/");
+                if (credParts.length > 0) {
+                    String accessKey = credParts[0];
+                    
+                    // For AWS signature, we validate that MinIO server is accessible
+                    // and let MinIO handle the actual signature validation
+                    if (credentialValidator.validateAccessKeyExists(accessKey)) {
+                        log.debug("AWS signature authentication check passed for access key: {}", accessKey);
+                        return chain.filter(exchange);
+                    } else {
+                        log.debug("MinIO server not accessible for AWS signature validation");
+                        return handleAuthenticationFailure(exchange, "Service unavailable");
+                    }
+                }
             }
             
-            log.debug("AWS signature authentication failed - access key mismatch");
+            log.debug("AWS signature authentication failed - invalid credential format");
             return handleAuthenticationFailure(exchange, "Invalid credentials");
             
         } catch (Exception e) {
@@ -128,7 +140,7 @@ public class S3AuthenticationFilter implements WebFilter {
                 String username = credArray[0];
                 String password = credArray[1];
                 
-                if (expectedAccessKey.equals(username) && expectedSecretKey.equals(password)) {
+                if (credentialValidator.validateCredentials(username, password)) {
                     log.debug("Basic authentication passed for user: {}", username);
                     return chain.filter(exchange);
                 }
