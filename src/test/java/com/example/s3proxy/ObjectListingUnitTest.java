@@ -75,13 +75,21 @@ public class ObjectListingUnitTest {
                 .baseUrl("http://localhost:" + port)
                 .build();
 
-        // Test that the endpoint with proper authentication headers reaches our controller
-        // (even though MinIO connection will fail, it shows our endpoint is working)
+        // Test that authentication fails when MinIO server is not accessible
+        // The new implementation validates credentials against MinIO directly,
+        // so when MinIO is unavailable, authentication should fail with 403
         webTestClient.get()
                 .uri("/test-bucket")
                 .header("Authorization", "AWS4-HMAC-SHA256 Credential=minioadmin/20241226/us-east-1/s3/aws4_request, SignedHeaders=host;x-amz-date, Signature=dummy")
                 .header("x-amz-date", "20241226T000000Z")
                 .exchange()
-                .expectStatus().is5xxServerError(); // Expected since MinIO is not available but auth passed
+                .expectStatus().isForbidden() // Authentication fails when MinIO is unavailable
+                .expectHeader().contentType("application/xml")
+                .expectBody(String.class)
+                .value(body -> {
+                    assert body.contains("<Error>");
+                    assert body.contains("<Code>AccessDenied</Code>");
+                    assert body.contains("<Message>Service unavailable</Message>");
+                });
     }
 }
