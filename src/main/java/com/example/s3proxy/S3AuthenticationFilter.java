@@ -29,6 +29,9 @@ public class S3AuthenticationFilter implements WebFilter {
     
     @Value("${MINIO_SECRET_KEY:minioadmin}")
     private String expectedSecretKey;
+    
+    @Value("${s3.auth.enabled:true}")
+    private boolean authenticationEnabled;
 
     @Override
     public Mono<Void> filter(ServerWebExchange exchange, WebFilterChain chain) {
@@ -39,9 +42,13 @@ public class S3AuthenticationFilter implements WebFilter {
             return chain.filter(exchange);
         }
         
-        // For root-level paths that look like S3 API calls, validate authentication
+        // For root-level paths that look like S3 API calls, validate authentication if enabled
         if (isS3ApiCall(path)) {
-            return validateAuthentication(exchange, chain);
+            if (authenticationEnabled) {
+                return validateAuthentication(exchange, chain);
+            } else {
+                log.debug("Authentication disabled, skipping validation for path: {}", path);
+            }
         }
         
         return chain.filter(exchange);
