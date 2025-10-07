@@ -29,7 +29,10 @@ import org.springframework.core.io.buffer.DataBufferUtils;
 
 import java.io.InputStream;
 import java.time.Duration;
+import java.time.LocalDateTime;
+import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
+import java.time.temporal.ChronoUnit;
 import java.util.Map;
 import java.util.List;
 import java.util.ArrayList;
@@ -42,6 +45,8 @@ import java.util.ArrayList;
 @RestController
 public class S3CompatibleController {
     private static final Logger log = LoggerFactory.getLogger(S3CompatibleController.class);
+    private static final DateTimeFormatter S3_TIMESTAMP_FORMATTER =
+            DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'");
     private final MinioClient minio;
     private final DeduplicationService deduplicationService;
 
@@ -197,15 +202,10 @@ public class S3CompatibleController {
                     xmlBuilder.append("  <Contents>\n");
                     xmlBuilder.append("    <Key>").append(escapeXml(objectInfo.getKey())).append("</Key>\n");
 
-                    // Format LastModified to match MinIO's format with milliseconds
-                    String lastModified = objectInfo.getLastModified()
-                            .atZone(java.time.ZoneOffset.UTC)
-                            .format(java.time.format.DateTimeFormatter.ISO_INSTANT);
-                    if (!lastModified.contains(".")) {
-                        // Add .000 if there are no milliseconds
-                        lastModified = lastModified.replace("Z", ".000Z");
+                    String lastModified = formatS3Timestamp(objectInfo.getLastModified());
+                    if (!lastModified.isEmpty()) {
+                        xmlBuilder.append("    <LastModified>").append(lastModified).append("</LastModified>\n");
                     }
-                    xmlBuilder.append("    <LastModified>").append(lastModified).append("</LastModified>\n");
 
                     // ETag should include quotes and not be XML escaped
                     String etag = objectInfo.getEtag().substring(0, Math.min(16, objectInfo.getEtag().length()));
@@ -256,6 +256,27 @@ public class S3CompatibleController {
                    .replace("'", "&apos;");
     }
 
+    private String formatS3Timestamp(LocalDateTime timestamp) {
+        if (timestamp == null) {
+            return "";
+        }
+        return timestamp
+                .atOffset(ZoneOffset.UTC)
+                .truncatedTo(ChronoUnit.MILLIS)
+                .format(S3_TIMESTAMP_FORMATTER);
+    }
+
+    private void applyLastModifiedHeader(HttpHeaders headers, LocalDateTime lastModified) {
+        if (headers == null || lastModified == null) {
+            return;
+        }
+        String httpDate = lastModified
+                .atOffset(ZoneOffset.UTC)
+                .truncatedTo(ChronoUnit.SECONDS)
+                .format(DateTimeFormatter.RFC_1123_DATE_TIME);
+        headers.set(HttpHeaders.LAST_MODIFIED, httpDate);
+    }
+
     // GET /{bucket}/{**key} - S3 compatible GET object  
     @GetMapping(value = "/{bucket}/**")
     public Mono<ResponseEntity<byte[]>> getObject(
@@ -279,10 +300,11 @@ public class S3CompatibleController {
                 }
                 // Add proper S3 headers using file hash
                 h.set("ETag", "\"" + fileData.getHash().substring(0, 16) + "\"");
+                applyLastModifiedHeader(h, fileData.getLastModified());
                 h.set("x-amz-request-id", java.util.UUID.randomUUID().toString().replace("-", "").substring(0, 16).toUpperCase());
                 h.set("x-amz-id-2", java.util.UUID.randomUUID().toString());
                 h.set("Server", "MinIO");
-                
+
                 return new ResponseEntity<>(fileData.getData(), h, HttpStatus.OK);
             } catch (Exception e) {
                 log.error("Error getting object: ", e);
@@ -380,10 +402,11 @@ public class S3CompatibleController {
                     headers.setContentType(MediaType.parseMediaType(fileData.getContentType()));
                 }
                 headers.set("ETag", "\"" + fileData.getHash().substring(0, 16) + "\"");
+                applyLastModifiedHeader(headers, fileData.getLastModified());
                 headers.set("x-amz-request-id", java.util.UUID.randomUUID().toString().replace("-", "").substring(0, 16).toUpperCase());
                 headers.set("x-amz-id-2", java.util.UUID.randomUUID().toString());
                 headers.set("Server", "MinIO");
-                
+
                 return new ResponseEntity<>(headers, HttpStatus.OK);
             } catch (Exception e) {
                 log.debug("Object not found for HEAD request: bucket={}, key={}", bucket, key);
