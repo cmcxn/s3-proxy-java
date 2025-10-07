@@ -17,6 +17,7 @@ import io.minio.http.Method;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpHeaders;
+import org.springframework.http.HttpRange;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
@@ -298,13 +299,45 @@ public class S3CompatibleController {
                 if (fileData.getContentType() != null) {
                     h.setContentType(MediaType.parseMediaType(fileData.getContentType()));
                 }
-                // Add proper S3 headers using file hash
-                h.set("ETag", "\"" + fileData.getHash().substring(0, 16) + "\"");
+
+                String hashPrefix = fileData.getHash().substring(0, Math.min(16, fileData.getHash().length()));
+                h.set("ETag", "\"" + hashPrefix + "\"");
                 applyLastModifiedHeader(h, fileData.getLastModified());
                 h.set("x-amz-request-id", java.util.UUID.randomUUID().toString().replace("-", "").substring(0, 16).toUpperCase());
                 h.set("x-amz-id-2", java.util.UUID.randomUUID().toString());
                 h.set("Server", "MinIO");
+                h.set(HttpHeaders.ACCEPT_RANGES, "bytes");
 
+                String rangeHeader = exchange.getRequest().getHeaders().getFirst(HttpHeaders.RANGE);
+                if (rangeHeader != null && !rangeHeader.isEmpty()) {
+                    try {
+                        List<HttpRange> ranges = HttpRange.parseRanges(rangeHeader);
+                        if (ranges.size() == 1) {
+                            HttpRange range = ranges.get(0);
+                            long fileSize = fileData.getSize();
+                            long rangeStart = range.getRangeStart(fileSize);
+                            long rangeEnd = range.getRangeEnd(fileSize);
+                            if (rangeStart >= fileSize) {
+                                HttpHeaders errorHeaders = new HttpHeaders();
+                                errorHeaders.set(HttpHeaders.CONTENT_RANGE, "bytes */" + fileSize);
+                                return new ResponseEntity<>(null, errorHeaders, HttpStatus.REQUESTED_RANGE_NOT_SATISFIABLE);
+                            }
+
+                            int length = (int) (rangeEnd - rangeStart + 1);
+                            byte[] body = new byte[length];
+                            System.arraycopy(fileData.getData(), (int) rangeStart, body, 0, length);
+
+                            h.setContentLength(length);
+                            h.set(HttpHeaders.CONTENT_RANGE, String.format("bytes %d-%d/%d", rangeStart, rangeEnd, fileSize));
+                            return new ResponseEntity<>(body, h, HttpStatus.PARTIAL_CONTENT);
+                        }
+                    } catch (IllegalArgumentException ex) {
+                        log.warn("Invalid range header '{}': {}", rangeHeader, ex.getMessage());
+                        // Fall back to full response
+                    }
+                }
+
+                h.setContentLength(fileData.getSize());
                 return new ResponseEntity<>(fileData.getData(), h, HttpStatus.OK);
             } catch (Exception e) {
                 log.error("Error getting object: ", e);
@@ -401,11 +434,13 @@ public class S3CompatibleController {
                 if (fileData.getContentType() != null) {
                     headers.setContentType(MediaType.parseMediaType(fileData.getContentType()));
                 }
-                headers.set("ETag", "\"" + fileData.getHash().substring(0, 16) + "\"");
+                String hashPrefix = fileData.getHash().substring(0, Math.min(16, fileData.getHash().length()));
+                headers.set("ETag", "\"" + hashPrefix + "\"");
                 applyLastModifiedHeader(headers, fileData.getLastModified());
                 headers.set("x-amz-request-id", java.util.UUID.randomUUID().toString().replace("-", "").substring(0, 16).toUpperCase());
                 headers.set("x-amz-id-2", java.util.UUID.randomUUID().toString());
                 headers.set("Server", "MinIO");
+                headers.set(HttpHeaders.ACCEPT_RANGES, "bytes");
 
                 return new ResponseEntity<>(headers, HttpStatus.OK);
             } catch (Exception e) {
