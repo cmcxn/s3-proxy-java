@@ -1,5 +1,6 @@
 package com.example.s3proxy;
 
+import com.example.s3proxy.service.BucketService;
 import com.example.s3proxy.service.DeduplicationService;
 import com.example.s3proxy.service.MultipartUploadService;
 import io.minio.MinioClient;
@@ -10,7 +11,6 @@ import io.minio.RemoveObjectArgs;
 import io.minio.StatObjectArgs;
 import io.minio.StatObjectResponse;
 import io.minio.GetPresignedObjectUrlArgs;
-import io.minio.BucketExistsArgs;
 import io.minio.ListObjectsArgs;
 import io.minio.Result;
 import io.minio.messages.Item;
@@ -62,13 +62,28 @@ public class S3CompatibleController {
     private final MinioClient minio;
     private final DeduplicationService deduplicationService;
     private final MultipartUploadService multipartUploadService;
+    private final BucketService bucketService;
 
     public S3CompatibleController(MinioClient minio,
                                   DeduplicationService deduplicationService,
-                                  MultipartUploadService multipartUploadService) {
+                                  MultipartUploadService multipartUploadService,
+                                  BucketService bucketService) {
         this.minio = minio;
         this.deduplicationService = deduplicationService;
         this.multipartUploadService = multipartUploadService;
+        this.bucketService = bucketService;
+    }
+
+    // PUT /{bucket} - Create bucket (required for mc mirror)
+    @PutMapping(value = "/{bucket}")
+    public Mono<ResponseEntity<Void>> createBucket(@PathVariable String bucket) {
+        return Mono.fromCallable(() -> {
+            bucketService.ensureBucketExists(bucket);
+
+            HttpHeaders headers = createStandardS3Headers();
+            headers.set("Location", "/" + bucket);
+            return new ResponseEntity<>(headers, HttpStatus.OK);
+        });
     }
 
     @PostMapping(value = "/{bucket}/**")
@@ -78,6 +93,8 @@ public class S3CompatibleController {
         String path = exchange.getRequest().getPath().value();
         String key = path.substring(("/" + bucket + "/").length());
         log.info("POST object request: bucket={}, key={}, query={}", bucket, key, exchange.getRequest().getQueryParams());
+
+        bucketService.ensureBucketExists(bucket);
 
         if (exchange.getRequest().getQueryParams().containsKey("uploads")) {
             Map<String, String> metadata = extractUserMetadata(exchange.getRequest().getHeaders());
@@ -154,8 +171,7 @@ public class S3CompatibleController {
     public Mono<ResponseEntity<Void>> headBucket(@PathVariable String bucket) {
         return Mono.fromCallable(() -> {
             try {
-                // Check if bucket exists using the underlying MinIO client
-                boolean exists = minio.bucketExists(BucketExistsArgs.builder().bucket(bucket).build());
+                boolean exists = bucketService.bucketExists(bucket);
                 if (exists) {
                     HttpHeaders headers = new HttpHeaders();
                     headers.set("x-amz-bucket-region", "us-east-1");
@@ -174,7 +190,7 @@ public class S3CompatibleController {
     }
 
     // GET /{bucket} - List objects in bucket (supports prefix, delimiter, etc.)
-    @GetMapping(value = "/{bucket}", produces = MediaType.APPLICATION_XML_VALUE)
+    @GetMapping(value = {"/{bucket}", "/{bucket}/"}, produces = MediaType.APPLICATION_XML_VALUE)
     public Mono<ResponseEntity<String>> listObjects(
             @PathVariable String bucket,
             @RequestParam(value = "prefix", required = false, defaultValue = "") String prefix,
@@ -183,11 +199,18 @@ public class S3CompatibleController {
             @RequestParam(value = "marker", required = false, defaultValue = "") String marker,
             @RequestParam(value = "list-type", required = false, defaultValue = "1") String listType,
             @RequestParam(value = "continuation-token", required = false, defaultValue = "") String continuationToken,
-            @RequestParam(value = "start-after", required = false, defaultValue = "") String startAfter) {
+            @RequestParam(value = "start-after", required = false, defaultValue = "") String startAfter,
+            @RequestParam(value = "encoding-type", required = false, defaultValue = "") String encodingType) {
         return Mono.fromCallable(() -> {
             try {
                 log.info("Listing objects: bucket={}, prefix='{}', delimiter='{}', maxKeys={}, listType={}, continuationToken='{}', startAfter='{}'",
                         bucket, prefix, delimiter, maxKeys, listType, continuationToken, startAfter);
+
+                boolean encodeKeys = "url".equalsIgnoreCase(encodingType);
+
+                // Ensure the logical bucket exists so mc mirror style workflows can proceed even if the
+                // bucket has not been explicitly created yet.
+                bucketService.ensureBucketExists(bucket);
 
                 // Use deduplication service to list objects from database instead of MinIO
                 List<DeduplicationService.ObjectInfo> objectInfos = deduplicationService.listObjects(bucket, prefix);
@@ -254,27 +277,35 @@ public class S3CompatibleController {
                 xmlBuilder.append("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
                 xmlBuilder.append("<ListBucketResult xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\">\n");
                 xmlBuilder.append("  <Name>").append(escapeXml(bucket)).append("</Name>\n");
-                xmlBuilder.append("  <Prefix>").append(escapeXml(prefix)).append("</Prefix>\n");
+                xmlBuilder.append("  <Prefix>").append(escapeXml(maybeEncode(prefix, encodeKeys))).append("</Prefix>\n");
+
+                if (encodeKeys) {
+                    xmlBuilder.append("  <EncodingType>url</EncodingType>\n");
+                }
 
                 if (isListV2) {
                     if (!continuationToken.isEmpty()) {
                         xmlBuilder.append("  <ContinuationToken>")
-                                .append(escapeXml(continuationToken))
+                                .append(escapeXml(maybeEncode(continuationToken, encodeKeys)))
                                 .append("</ContinuationToken>\n");
                     }
                     if (!startAfter.isEmpty()) {
                         xmlBuilder.append("  <StartAfter>")
-                                .append(escapeXml(startAfter))
+                                .append(escapeXml(maybeEncode(startAfter, encodeKeys)))
                                 .append("</StartAfter>\n");
                     }
                     xmlBuilder.append("  <KeyCount>").append(filteredItems.size()).append("</KeyCount>\n");
                 } else {
-                    xmlBuilder.append("  <Marker>").append(escapeXml(marker)).append("</Marker>\n");
+                    xmlBuilder.append("  <Marker>")
+                            .append(escapeXml(maybeEncode(marker, encodeKeys)))
+                            .append("</Marker>\n");
                 }
 
                 xmlBuilder.append("  <MaxKeys>").append(maxKeys).append("</MaxKeys>\n");
                 if (delimiter != null && !delimiter.isEmpty()) {
-                    xmlBuilder.append("  <Delimiter>").append(escapeXml(delimiter)).append("</Delimiter>\n");
+                    xmlBuilder.append("  <Delimiter>")
+                            .append(escapeXml(maybeEncode(delimiter, encodeKeys)))
+                            .append("</Delimiter>\n");
                 }
                 xmlBuilder.append("  <IsTruncated>").append(isTruncated ? "true" : "false").append("</IsTruncated>\n");
 
@@ -282,11 +313,11 @@ public class S3CompatibleController {
                 if (isTruncated && nextMarkerOrToken != null) {
                     if (isListV2) {
                         xmlBuilder.append("  <NextContinuationToken>")
-                                .append(escapeXml(nextMarkerOrToken))
+                                .append(escapeXml(maybeEncode(nextMarkerOrToken, encodeKeys)))
                                 .append("</NextContinuationToken>\n");
                     } else {
                         xmlBuilder.append("  <NextMarker>")
-                                .append(escapeXml(nextMarkerOrToken))
+                                .append(escapeXml(maybeEncode(nextMarkerOrToken, encodeKeys)))
                                 .append("</NextMarker>\n");
                     }
                 }
@@ -294,7 +325,7 @@ public class S3CompatibleController {
                 // Add objects to XML
                 for (DeduplicationService.ObjectInfo objectInfo : filteredItems) {
                     xmlBuilder.append("  <Contents>\n");
-                    xmlBuilder.append("    <Key>").append(escapeXml(objectInfo.getKey())).append("</Key>\n");
+                    xmlBuilder.append("    <Key>").append(escapeXml(maybeEncode(objectInfo.getKey(), encodeKeys))).append("</Key>\n");
 
                     String lastModified = formatS3Timestamp(objectInfo.getLastModified());
                     if (!lastModified.isEmpty()) {
@@ -319,7 +350,7 @@ public class S3CompatibleController {
                 // Add common prefixes for directory-style listing
                 for (String commonPrefix : commonPrefixes) {
                     xmlBuilder.append("  <CommonPrefixes>\n");
-                    xmlBuilder.append("    <Prefix>").append(escapeXml(commonPrefix)).append("</Prefix>\n");
+                    xmlBuilder.append("    <Prefix>").append(escapeXml(maybeEncode(commonPrefix, encodeKeys))).append("</Prefix>\n");
                     xmlBuilder.append("  </CommonPrefixes>\n");
                 }
 
@@ -348,6 +379,16 @@ public class S3CompatibleController {
                    .replace(">", "&gt;")
                    .replace("\"", "&quot;")
                    .replace("'", "&apos;");
+    }
+
+    private String maybeEncode(String value, boolean encode) {
+        if (!encode || value == null || value.isEmpty()) {
+            return value == null ? "" : value;
+        }
+
+        String encoded = java.net.URLEncoder.encode(value, StandardCharsets.UTF_8)
+                .replace("+", "%20");
+        return encoded;
     }
 
     private String formatS3Timestamp(LocalDateTime timestamp) {

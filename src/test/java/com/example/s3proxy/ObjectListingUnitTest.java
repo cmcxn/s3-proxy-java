@@ -89,4 +89,29 @@ public class ObjectListingUnitTest {
                     assert body.contains("<Name>test-bucket</Name>");
                 });
     }
+
+    @Test
+    void testListObjectsV2Encoding() throws Exception {
+        System.setProperty("MINIO_ENDPOINT", "http://localhost:9999");
+        System.setProperty("MINIO_ACCESS_KEY", "minioadmin");
+        System.setProperty("MINIO_SECRET_KEY", "minioadmin");
+
+        WebTestClient webTestClient = WebTestClient.bindToServer()
+                .baseUrl("http://localhost:" + port)
+                .build();
+
+        webTestClient.get()
+                .uri("/encoded-bucket?list-type=2&encoding-type=url&prefix=folder name/&continuation-token=item name&start-after=alpha beta")
+                .header("Authorization", "AWS4-HMAC-SHA256 Credential=minioadmin/20241226/us-east-1/s3/aws4_request, SignedHeaders=host;x-amz-date, Signature=dummy")
+                .header("x-amz-date", "20241226T000000Z")
+                .exchange()
+                .expectStatus().isOk()
+                .expectBody(String.class)
+                .value(body -> {
+                    assert body.contains("<EncodingType>url</EncodingType>");
+                    assert body.contains("<Prefix>folder%20name%2F</Prefix>");
+                    assert body.contains("<ContinuationToken>item%20name</ContinuationToken>");
+                    assert body.contains("<StartAfter>alpha%20beta</StartAfter>");
+                });
+    }
 }

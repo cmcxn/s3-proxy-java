@@ -35,20 +35,23 @@ public class DeduplicationService {
     private final FileRepository fileRepository;
     private final UserFileRepository userFileRepository;
     private final HashService hashService;
+    private final BucketService bucketService;
     private final MinioClient minioClient;
     private final String dedupeStorageBucket;
     
     // Flag to track if we've verified the dedupe bucket exists
     private volatile boolean dedupeStorageBucketChecked = false;
     
-    public DeduplicationService(FileRepository fileRepository, 
+    public DeduplicationService(FileRepository fileRepository,
                                UserFileRepository userFileRepository,
                                HashService hashService,
+                               BucketService bucketService,
                                MinioClient minioClient,
                                @Value("${minio.bucket.dedupe-storage}") String dedupeStorageBucket) {
         this.fileRepository = fileRepository;
         this.userFileRepository = userFileRepository;
         this.hashService = hashService;
+        this.bucketService = bucketService;
         this.minioClient = minioClient;
         this.dedupeStorageBucket = dedupeStorageBucket;
     }
@@ -90,6 +93,9 @@ public class DeduplicationService {
 
         // Ensure the dedupe storage bucket exists before any operations
         ensureDedupeStorageBucketExists();
+
+        // Ensure logical bucket exists for metadata storage
+        bucketService.ensureBucketExists(bucket);
 
         // Calculate hash
         String hash = hashService.calculateSHA256(data);
@@ -172,6 +178,11 @@ public class DeduplicationService {
     public FileData getObject(String bucket, String key) throws Exception {
         log.info("Getting file: bucket={}, key={}", bucket, key);
         
+        if (!bucketService.bucketExists(bucket)) {
+            log.debug("Bucket does not exist for getObject: bucket={}", bucket);
+            return null;
+        }
+
         Optional<UserFileEntity> userFile = userFileRepository.findByBucketAndKey(bucket, key);
         if (userFile.isEmpty()) {
             log.debug("File not found: bucket={}, key={}", bucket, key);
@@ -205,7 +216,12 @@ public class DeduplicationService {
      */
     public boolean deleteObject(String bucket, String key) throws Exception {
         log.info("Deleting file: bucket={}, key={}", bucket, key);
-        
+
+        if (!bucketService.bucketExists(bucket)) {
+            log.debug("Bucket does not exist for deletion: bucket={}", bucket);
+            return false;
+        }
+
         Optional<UserFileEntity> userFile = userFileRepository.findByBucketAndKey(bucket, key);
         if (userFile.isEmpty()) {
             log.debug("File not found for deletion: bucket={}, key={}", bucket, key);
@@ -311,6 +327,8 @@ public class DeduplicationService {
             source.setLastModified(lastModified);
             userFileRepository.save(source);
         } else {
+            bucketService.ensureBucketExists(destinationBucket);
+
             Optional<UserFileEntity> existingDest = userFileRepository.findByBucketAndKey(destinationBucket, destinationKey);
             if (existingDest.isPresent()) {
                 log.debug("Destination exists, replacing: {}:{}", destinationBucket, destinationKey);
