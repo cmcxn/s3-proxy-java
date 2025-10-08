@@ -190,7 +190,7 @@ public class S3CompatibleController {
     }
 
     // GET /{bucket} - List objects in bucket (supports prefix, delimiter, etc.)
-    @GetMapping(value = "/{bucket}", produces = MediaType.APPLICATION_XML_VALUE)
+    @GetMapping(value = {"/{bucket}", "/{bucket}/"}, produces = MediaType.APPLICATION_XML_VALUE)
     public Mono<ResponseEntity<String>> listObjects(
             @PathVariable String bucket,
             @RequestParam(value = "prefix", required = false, defaultValue = "") String prefix,
@@ -204,6 +204,10 @@ public class S3CompatibleController {
             try {
                 log.info("Listing objects: bucket={}, prefix='{}', delimiter='{}', maxKeys={}, listType={}, continuationToken='{}', startAfter='{}'",
                         bucket, prefix, delimiter, maxKeys, listType, continuationToken, startAfter);
+
+                // Ensure the logical bucket exists so mc mirror style workflows can proceed even if the
+                // bucket has not been explicitly created yet.
+                bucketService.ensureBucketExists(bucket);
 
                 // Use deduplication service to list objects from database instead of MinIO
                 List<DeduplicationService.ObjectInfo> objectInfos = deduplicationService.listObjects(bucket, prefix);

@@ -6,6 +6,7 @@ import org.junit.jupiter.api.Assertions;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.web.reactive.server.WebTestClient;
@@ -55,7 +56,29 @@ class BucketLifecycleIntegrationTest {
                 .exchange()
                 .expectStatus().isNotFound();
 
-        // Create bucket through S3 API
+        // mc mirror issues a list request with a trailing slash before attempting to create or upload
+        webTestClient.get()
+                .uri(builder -> builder
+                        .path("/" + bucketName + "/")
+                        .queryParam("list-type", "2")
+                        .queryParam("max-keys", "1000")
+                        .build())
+                .header("Authorization", BASIC_AUTH_HEADER)
+                .exchange()
+                .expectStatus().isOk()
+                .expectHeader().contentTypeCompatibleWith(MediaType.APPLICATION_XML)
+                .expectBody(String.class)
+                .value(body -> Assertions.assertTrue(body.contains("<ListBucketResult")));
+
+        // Listing creates the logical bucket so subsequent HEAD requests succeed
+        webTestClient.head()
+                .uri("/" + bucketName)
+                .header("Authorization", BASIC_AUTH_HEADER)
+                .exchange()
+                .expectStatus().isOk();
+        Assertions.assertTrue(bucketService.bucketExists(bucketName));
+
+        // Create bucket through S3 API (explicit call still supported)
         webTestClient.put()
                 .uri("/" + bucketName)
                 .header("Authorization", BASIC_AUTH_HEADER)
