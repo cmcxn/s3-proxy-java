@@ -22,7 +22,7 @@ services:
 
   # S3 Proxy 应用服务 (使用 H2 数据库)
   s3-proxy:
-    build: .
+    image: chenmins/s3-proxy-java:latest
     container_name: s3proxy-app
     ports:
       - "8080:8080"
@@ -64,7 +64,7 @@ services:
 
   # S3 Proxy 应用服务 (使用 MySQL 数据库)
   s3-proxy-mysql:
-    build: .
+    image: chenmins/s3-proxy-java:latest
     container_name: s3proxy-app-mysql
     ports:
       - "8081:8080"

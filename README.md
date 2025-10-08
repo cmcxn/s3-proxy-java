@@ -512,7 +512,7 @@ src/main/java/com/example/s3proxy/
 
 ```bash
 # 拉取最新版本
-docker pull [DOCKER_USERNAME]/s3-proxy-java:latest
+docker pull chenmins/s3-proxy-java:latest
 
 # 运行容器（必须提供环境变量）
 docker run -d \
@@ -522,7 +522,7 @@ docker run -d \
   -e MINIO_ACCESS_KEY=minioadmin \
   -e MINIO_SECRET_KEY=minioadmin \
   -e S3_AUTH_ENABLED=true \
-  [DOCKER_USERNAME]/s3-proxy-java:latest
+  chenmins/s3-proxy-java:latest
 ```
 
 > **注意**: 
