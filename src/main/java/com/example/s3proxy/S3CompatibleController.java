@@ -18,6 +18,7 @@ import io.minio.http.Method;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpHeaders;
+import org.springframework.http.HttpMethod;
 import org.springframework.http.HttpRange;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
@@ -552,16 +553,7 @@ public class S3CompatibleController {
                     resolvedListType,
                     resolvedContinuationToken,
                     resolvedStartAfter)
-                    .map(response -> {
-                        byte[] body = null;
-                        if (response.getBody() != null) {
-                            body = response.getBody().getBytes(StandardCharsets.UTF_8);
-                        }
-
-                        HttpHeaders headers = new HttpHeaders();
-                        headers.putAll(response.getHeaders());
-                        return new ResponseEntity<>(body, headers, response.getStatusCode());
-                    });
+                    .map(response -> convertListResponseToObjectResponse(response, exchange.getRequest().getMethod()));
         }
 
         return Mono.fromCallable(() -> {
@@ -621,6 +613,24 @@ public class S3CompatibleController {
                 return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).build();
             }
         });
+    }
+
+    private ResponseEntity<byte[]> convertListResponseToObjectResponse(ResponseEntity<String> response,
+                                                                      HttpMethod requestMethod) {
+        byte[] body = null;
+        String responseBody = response.getBody();
+        if (responseBody != null && requestMethod != HttpMethod.HEAD) {
+            body = responseBody.getBytes(StandardCharsets.UTF_8);
+        }
+
+        HttpHeaders headers = new HttpHeaders();
+        response.getHeaders().forEach((name, values) -> {
+            if (!HttpHeaders.AUTHORIZATION.equalsIgnoreCase(name)) {
+                headers.put(name, new ArrayList<>(values));
+            }
+        });
+
+        return new ResponseEntity<>(body, headers, response.getStatusCode());
     }
 
     // PUT /{bucket}/{**key} - S3 compatible PUT object
@@ -741,6 +751,11 @@ public class S3CompatibleController {
         // Extract key by removing the bucket part: /bucket/key -> key
         String key = path.substring(("/" + bucket + "/").length());
         log.info("HEAD object: bucket={}, key={}", bucket, key);
+
+        if (key.isEmpty()) {
+            return headBucket(bucket);
+        }
+
         return Mono.fromCallable(() -> {
             try {
                 DeduplicationService.FileData fileData = deduplicationService.getObject(bucket, key);
