@@ -18,6 +18,7 @@ import io.minio.http.Method;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpHeaders;
+import org.springframework.http.HttpMethod;
 import org.springframework.http.HttpRange;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
@@ -513,7 +514,48 @@ public class S3CompatibleController {
         // Extract key by removing the bucket part: /bucket/key -> key
         String key = path.substring(("/" + bucket + "/").length());
         log.info("GET object: bucket={}, key={}", bucket, key);
-        
+
+        if (key.isEmpty()) {
+            // MinIO client (mc) sometimes performs GET requests against bucket URLs with a
+            // trailing slash ("/bucket/") when checking bucket state. In that case the
+            // request should behave the same as a regular bucket listing request instead of
+            // being treated as an object lookup with an empty key, which previously returned
+            // a 404 and caused mc to believe the bucket was missing. We delegate to the
+            // existing listObjects handler and convert its String body into a byte[] response.
+            String prefix = exchange.getRequest().getQueryParams().getFirst("prefix");
+            String delimiter = exchange.getRequest().getQueryParams().getFirst("delimiter");
+            String maxKeysParam = exchange.getRequest().getQueryParams().getFirst("max-keys");
+            String marker = exchange.getRequest().getQueryParams().getFirst("marker");
+            String listType = exchange.getRequest().getQueryParams().getFirst("list-type");
+            String continuationToken = exchange.getRequest().getQueryParams().getFirst("continuation-token");
+            String startAfter = exchange.getRequest().getQueryParams().getFirst("start-after");
+
+            int maxKeys = 1000;
+            if (maxKeysParam != null && !maxKeysParam.isEmpty()) {
+                try {
+                    maxKeys = Integer.parseInt(maxKeysParam);
+                } catch (NumberFormatException e) {
+                    log.warn("Invalid max-keys value '{}', falling back to default", maxKeysParam);
+                }
+            }
+
+            String resolvedPrefix = prefix != null ? prefix : "";
+            String resolvedMarker = marker != null ? marker : "";
+            String resolvedListType = listType != null ? listType : "1";
+            String resolvedContinuationToken = continuationToken != null ? continuationToken : "";
+            String resolvedStartAfter = startAfter != null ? startAfter : "";
+
+            return listObjects(bucket,
+                    resolvedPrefix,
+                    delimiter,
+                    maxKeys,
+                    resolvedMarker,
+                    resolvedListType,
+                    resolvedContinuationToken,
+                    resolvedStartAfter)
+                    .map(response -> convertListResponseToObjectResponse(response, exchange.getRequest().getMethod()));
+        }
+
         return Mono.fromCallable(() -> {
             try {
                 DeduplicationService.FileData fileData = deduplicationService.getObject(bucket, key);
@@ -571,6 +613,24 @@ public class S3CompatibleController {
                 return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).build();
             }
         });
+    }
+
+    private ResponseEntity<byte[]> convertListResponseToObjectResponse(ResponseEntity<String> response,
+                                                                      HttpMethod requestMethod) {
+        byte[] body = null;
+        String responseBody = response.getBody();
+        if (responseBody != null && requestMethod != HttpMethod.HEAD) {
+            body = responseBody.getBytes(StandardCharsets.UTF_8);
+        }
+
+        HttpHeaders headers = new HttpHeaders();
+        response.getHeaders().forEach((name, values) -> {
+            if (!HttpHeaders.AUTHORIZATION.equalsIgnoreCase(name)) {
+                headers.put(name, new ArrayList<>(values));
+            }
+        });
+
+        return new ResponseEntity<>(body, headers, response.getStatusCode());
     }
 
     // PUT /{bucket}/{**key} - S3 compatible PUT object
@@ -691,6 +751,11 @@ public class S3CompatibleController {
         // Extract key by removing the bucket part: /bucket/key -> key
         String key = path.substring(("/" + bucket + "/").length());
         log.info("HEAD object: bucket={}, key={}", bucket, key);
+
+        if (key.isEmpty()) {
+            return headBucket(bucket);
+        }
+
         return Mono.fromCallable(() -> {
             try {
                 DeduplicationService.FileData fileData = deduplicationService.getObject(bucket, key);
