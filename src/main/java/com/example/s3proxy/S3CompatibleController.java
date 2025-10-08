@@ -1,6 +1,7 @@
 package com.example.s3proxy;
 
 import com.example.s3proxy.service.DeduplicationService;
+import com.example.s3proxy.service.MultipartUploadService;
 import io.minio.MinioClient;
 import io.minio.GetObjectArgs;
 import io.minio.GetObjectResponse;
@@ -28,6 +29,7 @@ import reactor.core.publisher.Mono;
 import org.springframework.core.io.buffer.DataBuffer;
 import org.springframework.core.io.buffer.DataBufferUtils;
 
+import java.io.ByteArrayInputStream;
 import java.io.InputStream;
 import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
@@ -41,6 +43,11 @@ import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import javax.xml.parsers.DocumentBuilder;
+import javax.xml.parsers.DocumentBuilderFactory;
+import org.w3c.dom.Document;
+import org.w3c.dom.Element;
+import org.w3c.dom.NodeList;
 
 /**
  * S3-compatible controller that handles requests at root level for MinIO SDK compatibility.
@@ -54,10 +61,92 @@ public class S3CompatibleController {
             DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'");
     private final MinioClient minio;
     private final DeduplicationService deduplicationService;
+    private final MultipartUploadService multipartUploadService;
 
-    public S3CompatibleController(MinioClient minio, DeduplicationService deduplicationService) {
+    public S3CompatibleController(MinioClient minio,
+                                  DeduplicationService deduplicationService,
+                                  MultipartUploadService multipartUploadService) {
         this.minio = minio;
         this.deduplicationService = deduplicationService;
+        this.multipartUploadService = multipartUploadService;
+    }
+
+    @PostMapping(value = "/{bucket}/**")
+    public Mono<ResponseEntity<String>> handleMultipartPost(
+            @PathVariable String bucket,
+            ServerWebExchange exchange) {
+        String path = exchange.getRequest().getPath().value();
+        String key = path.substring(("/" + bucket + "/").length());
+        log.info("POST object request: bucket={}, key={}, query={}", bucket, key, exchange.getRequest().getQueryParams());
+
+        if (exchange.getRequest().getQueryParams().containsKey("uploads")) {
+            Map<String, String> metadata = extractUserMetadata(exchange.getRequest().getHeaders());
+            String contentType = exchange.getRequest().getHeaders().getFirst("Content-Type");
+            String uploadId = multipartUploadService.createUpload(bucket, key, contentType, metadata);
+
+            HttpHeaders headers = createStandardS3Headers();
+            headers.setContentType(MediaType.APPLICATION_XML);
+
+            StringBuilder xml = new StringBuilder();
+            xml.append("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
+            xml.append("<InitiateMultipartUploadResult xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\">\n");
+            xml.append("  <Bucket>").append(escapeXml(bucket)).append("</Bucket>\n");
+            xml.append("  <Key>").append(escapeXml(key)).append("</Key>\n");
+            xml.append("  <UploadId>").append(uploadId).append("</UploadId>\n");
+            xml.append("</InitiateMultipartUploadResult>");
+
+            return Mono.just(new ResponseEntity<>(xml.toString(), headers, HttpStatus.OK));
+        }
+
+        String uploadId = exchange.getRequest().getQueryParams().getFirst("uploadId");
+        if (uploadId != null) {
+            return DataBufferUtils.join(exchange.getRequest().getBody())
+                    .flatMap(dataBuffer -> {
+                        try {
+                            byte[] bytes = new byte[dataBuffer.readableByteCount()];
+                            dataBuffer.read(bytes);
+                            List<Integer> partNumbers = parseCompleteMultipartRequest(bytes);
+                            MultipartUploadService.CompletedUpload completedUpload =
+                                    multipartUploadService.completeUpload(uploadId, partNumbers);
+
+                            if (!completedUpload.getBucket().equals(bucket) || !completedUpload.getKey().equals(key)) {
+                                log.warn("Upload metadata mismatch for uploadId={}: request bucket/key {}:{}, stored {}:{}",
+                                        uploadId, bucket, key, completedUpload.getBucket(), completedUpload.getKey());
+                            }
+
+                            String etag = deduplicationService.putObject(
+                                    bucket,
+                                    key,
+                                    completedUpload.getData(),
+                                    completedUpload.getContentType(),
+                                    completedUpload.getMetadata());
+
+                            HttpHeaders headers = createStandardS3Headers();
+                            headers.setContentType(MediaType.APPLICATION_XML);
+                            headers.set("ETag", "\"" + etag + "\"");
+
+                            StringBuilder xml = new StringBuilder();
+                            xml.append("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
+                            xml.append("<CompleteMultipartUploadResult xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\">\n");
+                            xml.append("  <Bucket>").append(escapeXml(bucket)).append("</Bucket>\n");
+                            xml.append("  <Key>").append(escapeXml(key)).append("</Key>\n");
+                            xml.append("  <ETag>\"").append(etag).append("\"</ETag>\n");
+                            xml.append("</CompleteMultipartUploadResult>");
+
+                            return Mono.just(new ResponseEntity<>(xml.toString(), headers, HttpStatus.OK));
+                        } catch (IllegalArgumentException e) {
+                            log.warn("Failed to complete multipart upload {}: {}", uploadId, e.getMessage());
+                            return Mono.just(ResponseEntity.status(HttpStatus.NOT_FOUND).body(""));
+                        } catch (Exception e) {
+                            log.error("Error completing multipart upload {}", uploadId, e);
+                            return Mono.just(ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(""));
+                        } finally {
+                            DataBufferUtils.release(dataBuffer);
+                        }
+                    });
+        }
+
+        return Mono.just(ResponseEntity.status(HttpStatus.BAD_REQUEST).body(""));
     }
 
     // HEAD /{bucket} - Check if bucket exists (required by MinIO SDK)
@@ -289,6 +378,14 @@ public class S3CompatibleController {
         metadata.forEach((key, value) -> headers.set("x-amz-meta-" + key, value));
     }
 
+    private HttpHeaders createStandardS3Headers() {
+        HttpHeaders headers = new HttpHeaders();
+        headers.set("x-amz-request-id", java.util.UUID.randomUUID().toString().replace("-", "").substring(0, 16).toUpperCase());
+        headers.set("x-amz-id-2", java.util.UUID.randomUUID().toString());
+        headers.set("Server", "MinIO");
+        return headers;
+    }
+
     private Map<String, String> extractUserMetadata(HttpHeaders headers) {
         if (headers == null) {
             return Collections.emptyMap();
@@ -307,6 +404,45 @@ public class S3CompatibleController {
             }
         });
         return metadata;
+    }
+
+    private List<Integer> parseCompleteMultipartRequest(byte[] body) throws Exception {
+        if (body == null || body.length == 0) {
+            return Collections.emptyList();
+        }
+
+        DocumentBuilderFactory factory = DocumentBuilderFactory.newInstance();
+        factory.setExpandEntityReferences(false);
+        factory.setNamespaceAware(false);
+        factory.setXIncludeAware(false);
+        factory.setFeature("http://apache.org/xml/features/disallow-doctype-decl", true);
+        factory.setFeature("http://xml.org/sax/features/external-general-entities", false);
+        factory.setFeature("http://xml.org/sax/features/external-parameter-entities", false);
+
+        DocumentBuilder builder = factory.newDocumentBuilder();
+        Document document = builder.parse(new ByteArrayInputStream(body));
+
+        NodeList partNodes = document.getElementsByTagName("Part");
+        List<Integer> partNumbers = new ArrayList<>();
+        for (int i = 0; i < partNodes.getLength(); i++) {
+            Element partElement = (Element) partNodes.item(i);
+            String partNumberText = getFirstChildTextContent(partElement, "PartNumber");
+            if (partNumberText != null && !partNumberText.isBlank()) {
+                partNumbers.add(Integer.parseInt(partNumberText.trim()));
+            }
+        }
+        return partNumbers;
+    }
+
+    private String getFirstChildTextContent(Element parent, String tagName) {
+        if (parent == null) {
+            return null;
+        }
+        NodeList nodes = parent.getElementsByTagName(tagName);
+        if (nodes == null || nodes.getLength() == 0) {
+            return null;
+        }
+        return nodes.item(0).getTextContent();
     }
 
     private Mono<ResponseEntity<String>> handleCopyObject(String destinationBucket,
@@ -450,6 +586,36 @@ public class S3CompatibleController {
         if (copySource != null && !copySource.isBlank()) {
             return handleCopyObject(bucket, key, exchange, copySource);
         }
+        String uploadId = exchange.getRequest().getQueryParams().getFirst("uploadId");
+        String partNumberParam = exchange.getRequest().getQueryParams().getFirst("partNumber");
+        if (uploadId != null && partNumberParam != null) {
+            int partNumber;
+            try {
+                partNumber = Integer.parseInt(partNumberParam);
+            } catch (NumberFormatException ex) {
+                log.warn("Invalid partNumber '{}' for upload {}", partNumberParam, uploadId);
+                return Mono.just(ResponseEntity.status(HttpStatus.BAD_REQUEST).body(""));
+            }
+
+            return DataBufferUtils.join(exchange.getRequest().getBody())
+                    .flatMap(dataBuffer -> {
+                        try {
+                            byte[] bytes = new byte[dataBuffer.readableByteCount()];
+                            dataBuffer.read(bytes);
+                            String etag = multipartUploadService.storePart(uploadId, partNumber, bytes);
+
+                            HttpHeaders headers = createStandardS3Headers();
+                            headers.set("ETag", "\"" + etag + "\"");
+
+                            return Mono.just(new ResponseEntity<>(null, headers, HttpStatus.OK));
+                        } catch (IllegalArgumentException e) {
+                            log.warn("Failed to store multipart upload part: {}", e.getMessage());
+                            return Mono.just(ResponseEntity.status(HttpStatus.NOT_FOUND).body(""));
+                        } finally {
+                            DataBufferUtils.release(dataBuffer);
+                        }
+                    });
+        }
         return DataBufferUtils.join(exchange.getRequest().getBody())
                 .flatMap(dataBuffer -> {
                     try {
@@ -465,11 +631,8 @@ public class S3CompatibleController {
                         String etag = deduplicationService.putObject(bucket, key, bytes, contentType, metadata);
 
                         // Return proper S3 response headers
-                        HttpHeaders headers = new HttpHeaders();
+                        HttpHeaders headers = createStandardS3Headers();
                         headers.set("ETag", "\"" + etag + "\"");
-                        headers.set("x-amz-request-id", java.util.UUID.randomUUID().toString().replace("-", "").substring(0, 16).toUpperCase());
-                        headers.set("x-amz-id-2", java.util.UUID.randomUUID().toString());
-                        headers.set("Server", "MinIO");
 
                         return Mono.just(new ResponseEntity<>(null, headers, HttpStatus.CREATED));
                     } catch (Exception e) {
@@ -488,10 +651,19 @@ public class S3CompatibleController {
         // Extract key by removing the bucket part: /bucket/key -> key
         String key = path.substring(("/" + bucket + "/").length());
         log.info("DELETE object: bucket={}, key={}", bucket, key);
+        String uploadId = exchange.getRequest().getQueryParams().getFirst("uploadId");
+        if (uploadId != null) {
+            boolean aborted = multipartUploadService.abortUpload(uploadId);
+            if (aborted) {
+                HttpHeaders headers = createStandardS3Headers();
+                return Mono.just(new ResponseEntity<>(headers, HttpStatus.NO_CONTENT));
+            }
+            return Mono.just(new ResponseEntity<>(HttpStatus.NOT_FOUND));
+        }
         return Mono.fromCallable(() -> {
             try {
                 boolean deleted = deduplicationService.deleteObject(bucket, key);
-                
+
                 if (!deleted) {
                     return new ResponseEntity<>(HttpStatus.NOT_FOUND);
                 }
