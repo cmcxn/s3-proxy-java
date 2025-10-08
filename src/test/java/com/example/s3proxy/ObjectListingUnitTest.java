@@ -76,12 +76,17 @@ public class ObjectListingUnitTest {
                 .build();
 
         // Test that the endpoint with proper authentication headers reaches our controller
-        // (even though MinIO connection will fail, it shows our endpoint is working)
+        // and returns a successful listing response from the proxy layer
         webTestClient.get()
                 .uri("/test-bucket")
                 .header("Authorization", "AWS4-HMAC-SHA256 Credential=minioadmin/20241226/us-east-1/s3/aws4_request, SignedHeaders=host;x-amz-date, Signature=dummy")
                 .header("x-amz-date", "20241226T000000Z")
                 .exchange()
-                .expectStatus().is5xxServerError(); // Expected since MinIO is not available but auth passed
+                .expectStatus().isOk()
+                .expectBody(String.class)
+                .value(body -> {
+                    assert body.contains("<ListBucketResult");
+                    assert body.contains("<Name>test-bucket</Name>");
+                });
     }
 }

@@ -1,8 +1,12 @@
 package com.example.s3proxy.entity;
 
 import com.example.s3proxy.util.Sha256Utils;
+import com.example.s3proxy.util.JsonMapConverter;
 import jakarta.persistence.*;
 import java.time.LocalDateTime;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.Map;
 
 @Entity
 @Table(name = "minio_user_files", 
@@ -38,11 +42,20 @@ public class UserFileEntity {
     
     @Column(name = "created_at", nullable = false)
     private LocalDateTime createdAt;
+
+    @Column(name = "last_modified", nullable = false)
+    private LocalDateTime lastModified;
+
+    @Convert(converter = JsonMapConverter.class)
+    @Column(name = "metadata_json", columnDefinition = "TEXT")
+    private Map<String, String> metadata = new HashMap<>();
     
     public UserFileEntity() {
-        this.createdAt = LocalDateTime.now();
+        LocalDateTime now = LocalDateTime.now();
+        this.createdAt = now;
+        this.lastModified = now;
     }
-    
+
     public UserFileEntity(String bucket, String key, FileEntity file) {
         this();
         this.bucket = bucket;
@@ -69,7 +82,27 @@ public class UserFileEntity {
     
     public FileEntity getFile() { return file; }
     public void setFile(FileEntity file) { this.file = file; }
-    
+
     public LocalDateTime getCreatedAt() { return createdAt; }
     public void setCreatedAt(LocalDateTime createdAt) { this.createdAt = createdAt; }
+
+    public LocalDateTime getLastModified() { return lastModified; }
+    public void setLastModified(LocalDateTime lastModified) {
+        this.lastModified = lastModified;
+    }
+
+    public Map<String, String> getMetadata() {
+        if (metadata == null || metadata.isEmpty()) {
+            return Collections.emptyMap();
+        }
+        return Collections.unmodifiableMap(metadata);
+    }
+
+    public void setMetadata(Map<String, String> metadata) {
+        if (metadata == null || metadata.isEmpty()) {
+            this.metadata = new HashMap<>();
+        } else {
+            this.metadata = new HashMap<>(metadata);
+        }
+    }
 }

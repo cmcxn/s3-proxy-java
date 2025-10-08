@@ -27,13 +27,18 @@ public class MinioCompatibilityFormatTest {
                 .build();
 
         // Test the XML structure even when MinIO connection fails
-        // We'll get a 500 error but can check that authentication passed
+        // The proxy now responds successfully using its internal metadata store
         webTestClient.get()
                 .uri("/test-bucket?prefix=myfolder/&delimiter=/")
                 .header("Authorization", "AWS4-HMAC-SHA256 Credential=minioadmin/20241226/us-east-1/s3/aws4_request, SignedHeaders=host;x-amz-date, Signature=dummy")
                 .header("x-amz-date", "20241226T000000Z")
                 .exchange()
-                .expectStatus().is5xxServerError(); // Expected since MinIO is not available but shows our auth and format logic ran
+                .expectStatus().isOk()
+                .expectBody(String.class)
+                .value(body -> {
+                    assert body.contains("<ListBucketResult");
+                    assert body.contains("<Delimiter>/</Delimiter>");
+                });
     }
 
     @Test
@@ -46,13 +51,18 @@ public class MinioCompatibilityFormatTest {
                 .baseUrl("http://localhost:" + port)
                 .build();
 
-        // Test that delimiter parameter is correctly processed
+        // Test that delimiter parameter is correctly processed even without MinIO
         webTestClient.get()
                 .uri("/test-bucket?delimiter=/&max-keys=50")
                 .header("Authorization", "AWS4-HMAC-SHA256 Credential=minioadmin/20241226/us-east-1/s3/aws4_request, SignedHeaders=host;x-amz-date, Signature=dummy")
                 .header("x-amz-date", "20241226T000000Z")
                 .exchange()
-                .expectStatus().is5xxServerError(); // Expected since MinIO is not available
+                .expectStatus().isOk()
+                .expectBody(String.class)
+                .value(body -> {
+                    assert body.contains("<ListBucketResult");
+                    assert body.contains("<MaxKeys>50</MaxKeys>");
+                });
     }
 
     @Test

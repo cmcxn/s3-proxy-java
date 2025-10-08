@@ -29,14 +29,18 @@ import org.springframework.core.io.buffer.DataBuffer;
 import org.springframework.core.io.buffer.DataBufferUtils;
 
 import java.io.InputStream;
+import java.net.URLDecoder;
+import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
 import java.time.temporal.ChronoUnit;
-import java.util.Map;
-import java.util.List;
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
 
 /**
  * S3-compatible controller that handles requests at root level for MinIO SDK compatibility.
@@ -278,6 +282,92 @@ public class S3CompatibleController {
         headers.set(HttpHeaders.LAST_MODIFIED, httpDate);
     }
 
+    private void applyUserMetadata(HttpHeaders headers, Map<String, String> metadata) {
+        if (headers == null || metadata == null || metadata.isEmpty()) {
+            return;
+        }
+        metadata.forEach((key, value) -> headers.set("x-amz-meta-" + key, value));
+    }
+
+    private Map<String, String> extractUserMetadata(HttpHeaders headers) {
+        if (headers == null) {
+            return Collections.emptyMap();
+        }
+        Map<String, String> metadata = new LinkedHashMap<>();
+        headers.forEach((name, values) -> {
+            if (name == null) {
+                return;
+            }
+            String lower = name.toLowerCase();
+            if (lower.startsWith("x-amz-meta-")) {
+                String key = lower.substring("x-amz-meta-".length());
+                if (!key.isBlank() && values != null && !values.isEmpty()) {
+                    metadata.put(key, values.get(0));
+                }
+            }
+        });
+        return metadata;
+    }
+
+    private Mono<ResponseEntity<String>> handleCopyObject(String destinationBucket,
+                                                          String destinationKey,
+                                                          ServerWebExchange exchange,
+                                                          String rawCopySource) {
+        String metadataDirective = exchange.getRequest().getHeaders().getFirst("x-amz-metadata-directive");
+        boolean replaceMetadata = metadataDirective != null && metadataDirective.equalsIgnoreCase("REPLACE");
+
+        String decodedSource = URLDecoder.decode(rawCopySource, StandardCharsets.UTF_8);
+        String source = decodedSource.startsWith("/") ? decodedSource.substring(1) : decodedSource;
+        int slashIndex = source.indexOf('/');
+        if (slashIndex < 0) {
+            log.warn("Invalid x-amz-copy-source header: {}", rawCopySource);
+            return Mono.just(ResponseEntity.status(HttpStatus.BAD_REQUEST).body(""));
+        }
+
+        String sourceBucket = source.substring(0, slashIndex);
+        String sourceKey = source.substring(slashIndex + 1);
+
+        Map<String, String> metadata = replaceMetadata
+                ? extractUserMetadata(exchange.getRequest().getHeaders())
+                : Collections.emptyMap();
+
+        return Mono.fromCallable(() -> {
+            try {
+                DeduplicationService.CopyResult result = deduplicationService.copyObject(
+                        sourceBucket,
+                        sourceKey,
+                        destinationBucket,
+                        destinationKey,
+                        metadata,
+                        replaceMetadata);
+
+                if (result == null) {
+                    return ResponseEntity.status(HttpStatus.NOT_FOUND)
+                            .body("<Error><Code>NoSuchKey</Code></Error>");
+                }
+
+                HttpHeaders responseHeaders = new HttpHeaders();
+                responseHeaders.setContentType(MediaType.APPLICATION_XML);
+                responseHeaders.set("x-amz-request-id", java.util.UUID.randomUUID().toString().replace("-", "").substring(0, 16).toUpperCase());
+                responseHeaders.set("x-amz-id-2", java.util.UUID.randomUUID().toString());
+                responseHeaders.set("Server", "MinIO");
+
+                StringBuilder xml = new StringBuilder();
+                xml.append("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
+                xml.append("<CopyObjectResult>\n");
+                xml.append("  <LastModified>").append(formatS3Timestamp(result.getLastModified())).append("</LastModified>\n");
+                xml.append("  <ETag>\"").append(result.getEtag()).append("\"</ETag>\n");
+                xml.append("</CopyObjectResult>");
+
+                return new ResponseEntity<>(xml.toString(), responseHeaders, HttpStatus.OK);
+            } catch (Exception e) {
+                log.error("Error processing copy request", e);
+                return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                        .body("<Error><Code>InternalError</Code></Error>");
+            }
+        });
+    }
+
     // GET /{bucket}/{**key} - S3 compatible GET object  
     @GetMapping(value = "/{bucket}/**")
     public Mono<ResponseEntity<byte[]>> getObject(
@@ -307,6 +397,7 @@ public class S3CompatibleController {
                 h.set("x-amz-id-2", java.util.UUID.randomUUID().toString());
                 h.set("Server", "MinIO");
                 h.set(HttpHeaders.ACCEPT_RANGES, "bytes");
+                applyUserMetadata(h, fileData.getMetadata());
 
                 String rangeHeader = exchange.getRequest().getHeaders().getFirst(HttpHeaders.RANGE);
                 if (rangeHeader != null && !rangeHeader.isEmpty()) {
@@ -348,13 +439,17 @@ public class S3CompatibleController {
 
     // PUT /{bucket}/{**key} - S3 compatible PUT object
     @PutMapping(value = "/{bucket}/**")
-    public Mono<ResponseEntity<Void>> putObject(
+    public Mono<ResponseEntity<String>> putObject(
             @PathVariable String bucket,
             ServerWebExchange exchange) {
         String path = exchange.getRequest().getPath().value();
         // Extract key by removing the bucket part: /bucket/key -> key
         String key = path.substring(("/" + bucket + "/").length());
         log.info("PUT object: bucket={}, key={}", bucket, key);
+        String copySource = exchange.getRequest().getHeaders().getFirst("x-amz-copy-source");
+        if (copySource != null && !copySource.isBlank()) {
+            return handleCopyObject(bucket, key, exchange, copySource);
+        }
         return DataBufferUtils.join(exchange.getRequest().getBody())
                 .flatMap(dataBuffer -> {
                     try {
@@ -364,20 +459,22 @@ public class S3CompatibleController {
 
                         String contentType = exchange.getRequest().getHeaders().getFirst("Content-Type");
                         
+                        Map<String, String> metadata = extractUserMetadata(exchange.getRequest().getHeaders());
+
                         // Use deduplication service instead of direct MinIO upload
-                        String etag = deduplicationService.putObject(bucket, key, bytes, contentType);
-                        
+                        String etag = deduplicationService.putObject(bucket, key, bytes, contentType, metadata);
+
                         // Return proper S3 response headers
                         HttpHeaders headers = new HttpHeaders();
                         headers.set("ETag", "\"" + etag + "\"");
                         headers.set("x-amz-request-id", java.util.UUID.randomUUID().toString().replace("-", "").substring(0, 16).toUpperCase());
                         headers.set("x-amz-id-2", java.util.UUID.randomUUID().toString());
                         headers.set("Server", "MinIO");
-                        
-                        return Mono.just(new ResponseEntity<>(headers, HttpStatus.CREATED));
+
+                        return Mono.just(new ResponseEntity<>(null, headers, HttpStatus.CREATED));
                     } catch (Exception e) {
                         log.error("Error putting object: ", e);
-                        return Mono.just(ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).<Void>build());
+                        return Mono.just(ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).build());
                     }
                 });
     }
@@ -441,6 +538,7 @@ public class S3CompatibleController {
                 headers.set("x-amz-id-2", java.util.UUID.randomUUID().toString());
                 headers.set("Server", "MinIO");
                 headers.set(HttpHeaders.ACCEPT_RANGES, "bytes");
+                applyUserMetadata(headers, fileData.getMetadata());
 
                 return new ResponseEntity<>(headers, HttpStatus.OK);
             } catch (Exception e) {
