@@ -109,14 +109,25 @@ services:
 1. **Docker Hub 登录失败**
    - 检查 DOCKER_USERNAME 和 DOCKER_PASSWORD 是否正确设置
    - 确认 Docker Hub 访问令牌有推送权限
+   - 工作流会自动验证凭据是否存在
 
-2. **构建失败**
+2. **权限错误 (ACTIONS_ID_TOKEN_REQUEST_URL)**
+   - 确保仓库已启用 GitHub Actions
+   - 检查工作流权限设置包含 `id-token: write` 和 `attestations: write`
+
+3. **构建失败**
    - 检查 Dockerfile 语法
    - 确认所有依赖项可访问
+   - 确保 Maven 构建步骤成功完成
 
-3. **推送失败**
+4. **推送失败**
    - 检查仓库名称是否正确
    - 确认 Docker Hub 仓库存在且有推送权限
+   - 验证标签格式是否正确
+
+5. **安全警告**
+   - 敏感环境变量不再硬编码在 Dockerfile 中
+   - 使用运行时环境变量配置敏感信息
 
 ### 调试方法
 
@@ -127,6 +138,31 @@ services:
    ```
 
 ## 安全注意事项
+
+### Docker 镜像安全
+- ✅ 使用非 root 用户运行应用
+- ✅ 敏感环境变量不再硬编码在镜像中
+- ✅ 最小权限原则：只暴露必要的端口和目录
+
+### 环境变量配置
+敏感信息现在需要在运行时提供：
+
+```bash
+# 正确的运行方式
+docker run -d \
+  --name s3-proxy \
+  -p 8080:8080 \
+  -e MINIO_ENDPOINT=http://your-minio:9000 \
+  -e MINIO_ACCESS_KEY=your-access-key \
+  -e MINIO_SECRET_KEY=your-secret-key \
+  -e S3_AUTH_ENABLED=true \
+  your-username/s3-proxy-java:latest
+```
+
+### GitHub Actions 安全
+- 使用 repository secrets 存储敏感信息
+- 启用了构建证明 (build attestation) 功能
+- 支持 OIDC 令牌验证
 
 - 使用 Docker Hub 访问令牌而非密码
 - 定期轮换访问令牌

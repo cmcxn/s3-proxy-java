@@ -514,17 +514,21 @@ src/main/java/com/example/s3proxy/
 # 拉取最新版本
 docker pull [DOCKER_USERNAME]/s3-proxy-java:latest
 
-# 运行容器
+# 运行容器（必须提供环境变量）
 docker run -d \
   --name s3-proxy \
   -p 8080:8080 \
   -e MINIO_ENDPOINT=http://host.docker.internal:9000 \
   -e MINIO_ACCESS_KEY=minioadmin \
   -e MINIO_SECRET_KEY=minioadmin \
+  -e S3_AUTH_ENABLED=true \
   [DOCKER_USERNAME]/s3-proxy-java:latest
 ```
 
-> **注意**: 请将 `[DOCKER_USERNAME]` 替换为实际的 Docker Hub 用户名。
+> **注意**: 
+> - 请将 `[DOCKER_USERNAME]` 替换为实际的 Docker Hub 用户名
+> - 从安全考虑，敏感环境变量（如 MinIO 凭据）不再硬编码在镜像中，必须在运行时提供
+> - 建议在生产环境中使用更安全的方式管理敏感信息（如 Docker secrets 或 Kubernetes secrets）
 
 详细的 Docker 发布和使用说明请参阅 [Docker 发布流水线说明](DOCKER_PUBLISHING.md)。
 
