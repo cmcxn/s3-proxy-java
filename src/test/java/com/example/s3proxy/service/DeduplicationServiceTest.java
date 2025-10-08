@@ -58,7 +58,7 @@ class DeduplicationServiceTest {
         when(userFileRepository.save(any(UserFileEntity.class))).thenReturn(new UserFileEntity());
         
         // Act
-        String etag = deduplicationService.putObject(bucket, key, data, contentType);
+        String etag = deduplicationService.putObject(bucket, key, data, contentType, java.util.Collections.emptyMap());
         
         // Assert
         assertEquals(expectedHash.substring(0, 16), etag);
@@ -99,7 +99,7 @@ class DeduplicationServiceTest {
         when(fileRepository.findById(1L)).thenReturn(Optional.of(refreshedFile), Optional.of(finalFile));
         
         // Act
-        String etag = deduplicationService.putObject(bucket, key, data, contentType);
+        String etag = deduplicationService.putObject(bucket, key, data, contentType, java.util.Collections.emptyMap());
         
         // Assert
         assertEquals(expectedHash.substring(0, 16), etag);

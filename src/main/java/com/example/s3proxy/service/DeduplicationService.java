@@ -18,7 +18,10 @@ import org.springframework.transaction.annotation.Transactional;
 import java.io.ByteArrayInputStream;
 import java.io.InputStream;
 import java.time.LocalDateTime;
+import java.util.Collections;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 
 @Service
@@ -48,12 +51,15 @@ public class DeduplicationService {
     /**
      * Store a file with deduplication logic
      */
-    public String putObject(String bucket, String key, byte[] data, String contentType) throws Exception {
+    public String putObject(String bucket, String key, byte[] data, String contentType, Map<String, String> userMetadata) throws Exception {
         log.info("Storing file with deduplication: bucket={}, key={}, size={}", bucket, key, data.length);
-        
+
         // Calculate hash
         String hash = hashService.calculateSHA256(data);
         log.debug("Calculated SHA-256 hash: {}", hash);
+
+        Map<String, String> metadata = sanitizeMetadata(userMetadata);
+        LocalDateTime lastModified = resolveLastModified(metadata);
         
         // Check if file already exists
         Optional<FileEntity> existingFile = fileRepository.findByHashValue(hash);
@@ -104,19 +110,22 @@ public class DeduplicationService {
 
             // Update to new file
             oldMapping.setFile(fileEntity);
-            oldMapping.setCreatedAt(LocalDateTime.now());
+            oldMapping.setLastModified(lastModified);
+            oldMapping.setMetadata(metadata);
             userFileRepository.save(oldMapping);
         } else {
             // Create new mapping
             UserFileEntity userFile = new UserFileEntity(bucket, key, fileEntity);
+            userFile.setLastModified(lastModified);
+            userFile.setMetadata(metadata);
             userFileRepository.save(userFile);
         }
-        
+
         // Get the final entity state for logging
         FileEntity finalEntity = fileRepository.findById(fileEntity.getId()).orElse(fileEntity);
-        log.info("Successfully stored file: bucket={}, key={}, hash={}, new_reference_count={}", 
+        log.info("Successfully stored file: bucket={}, key={}, hash={}, new_reference_count={}",
                 bucket, key, hash, finalEntity.getReferenceCount());
-        
+
         return etag;
     }
     
@@ -149,7 +158,8 @@ public class DeduplicationService {
                     fileEntity.getContentType(),
                     fileEntity.getHashValue(),
                     fileEntity.getSize(),
-                    userFileEntity.getCreatedAt());
+                    userFileEntity.getLastModified(),
+                    userFileEntity.getMetadata());
         }
     }
     
@@ -221,13 +231,64 @@ public class DeduplicationService {
         
         return userFiles.stream()
                 .map(uf -> new ObjectInfo(
-                    uf.getKey(),
-                    uf.getFile().getSize(),
-                    uf.getCreatedAt(),
-                    uf.getFile().getHashValue(),
-                    uf.getFile().getContentType()
+                        uf.getKey(),
+                        uf.getFile().getSize(),
+                        uf.getLastModified(),
+                        uf.getFile().getHashValue(),
+                        uf.getFile().getContentType()
                 ))
                 .collect(java.util.stream.Collectors.toList());
+    }
+
+    public CopyResult copyObject(String sourceBucket,
+                                 String sourceKey,
+                                 String destinationBucket,
+                                 String destinationKey,
+                                 Map<String, String> userMetadata,
+                                 boolean replaceMetadata) throws Exception {
+        log.info("Copying object: {}:{} -> {}:{} (replaceMetadata={})",
+                sourceBucket, sourceKey, destinationBucket, destinationKey, replaceMetadata);
+
+        Optional<UserFileEntity> sourceOpt = userFileRepository.findByBucketAndKey(sourceBucket, sourceKey);
+        if (sourceOpt.isEmpty()) {
+            log.warn("Source object not found for copy: {}:{}", sourceBucket, sourceKey);
+            return null;
+        }
+
+        UserFileEntity source = sourceOpt.get();
+        Map<String, String> metadata = replaceMetadata
+                ? sanitizeMetadata(userMetadata)
+                : sanitizeMetadata(source.getMetadata());
+
+        if (!replaceMetadata && userMetadata != null && !userMetadata.isEmpty()) {
+            Map<String, String> merged = new HashMap<>(metadata);
+            merged.putAll(sanitizeMetadata(userMetadata));
+            metadata = merged;
+        }
+
+        LocalDateTime lastModified = resolveLastModified(metadata);
+        FileEntity fileEntity = source.getFile();
+
+        if (destinationBucket.equals(sourceBucket) && destinationKey.equals(sourceKey)) {
+            source.setMetadata(metadata);
+            source.setLastModified(lastModified);
+            userFileRepository.save(source);
+        } else {
+            Optional<UserFileEntity> existingDest = userFileRepository.findByBucketAndKey(destinationBucket, destinationKey);
+            if (existingDest.isPresent()) {
+                log.debug("Destination exists, replacing: {}:{}", destinationBucket, destinationKey);
+                deleteObject(destinationBucket, destinationKey);
+            }
+
+            fileRepository.incrementReferenceCount(fileEntity.getId());
+            UserFileEntity destination = new UserFileEntity(destinationBucket, destinationKey, fileEntity);
+            destination.setMetadata(metadata);
+            destination.setLastModified(lastModified);
+            userFileRepository.save(destination);
+        }
+
+        String etag = fileEntity.getHashValue().substring(0, Math.min(16, fileEntity.getHashValue().length()));
+        return new CopyResult(etag, lastModified);
     }
     
     public static class ObjectInfo {
@@ -252,19 +313,69 @@ public class DeduplicationService {
         public String getContentType() { return contentType; }
     }
     
+    private Map<String, String> sanitizeMetadata(Map<String, String> metadata) {
+        if (metadata == null || metadata.isEmpty()) {
+            return new HashMap<>();
+        }
+        Map<String, String> sanitized = new HashMap<>();
+        metadata.forEach((k, v) -> {
+            if (k != null && !k.isBlank() && v != null) {
+                sanitized.put(k.toLowerCase(), v);
+            }
+        });
+        return sanitized;
+    }
+
+    private LocalDateTime resolveLastModified(Map<String, String> metadata) {
+        String mtime = metadata.get("mtime");
+        if (mtime == null || mtime.isBlank()) {
+            return LocalDateTime.now();
+        }
+        try {
+            double seconds = Double.parseDouble(mtime);
+            long epochSeconds = (long) seconds;
+            long nanos = Math.round((seconds - epochSeconds) * 1_000_000_000d);
+            java.time.Instant instant = java.time.Instant.ofEpochSecond(epochSeconds, nanos);
+            return LocalDateTime.ofInstant(instant, java.time.ZoneOffset.UTC);
+        } catch (NumberFormatException ex) {
+            log.warn("Invalid mtime metadata '{}' - using current time", mtime);
+            return LocalDateTime.now();
+        }
+    }
+
+    public static class CopyResult {
+        private final String etag;
+        private final LocalDateTime lastModified;
+
+        public CopyResult(String etag, LocalDateTime lastModified) {
+            this.etag = etag;
+            this.lastModified = lastModified;
+        }
+
+        public String getEtag() {
+            return etag;
+        }
+
+        public LocalDateTime getLastModified() {
+            return lastModified;
+        }
+    }
+
     public static class FileData {
         private final byte[] data;
         private final String contentType;
         private final String hash;
         private final long size;
         private final LocalDateTime lastModified;
+        private final Map<String, String> metadata;
 
-        public FileData(byte[] data, String contentType, String hash, long size, LocalDateTime lastModified) {
+        public FileData(byte[] data, String contentType, String hash, long size, LocalDateTime lastModified, Map<String, String> metadata) {
             this.data = data;
             this.contentType = contentType;
             this.hash = hash;
             this.size = size;
             this.lastModified = lastModified;
+            this.metadata = metadata == null ? Collections.emptyMap() : Collections.unmodifiableMap(new HashMap<>(metadata));
         }
 
         public byte[] getData() { return data; }
@@ -272,5 +383,6 @@ public class DeduplicationService {
         public String getHash() { return hash; }
         public long getSize() { return size; }
         public LocalDateTime getLastModified() { return lastModified; }
+        public Map<String, String> getMetadata() { return metadata; }
     }
 }

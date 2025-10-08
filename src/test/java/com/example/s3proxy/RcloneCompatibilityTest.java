@@ -7,6 +7,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.web.server.LocalServerPort;
+import org.springframework.http.HttpHeaders;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.web.reactive.server.WebTestClient;
@@ -139,6 +140,54 @@ public class RcloneCompatibilityTest {
         assertTrue(secondPage.contains("<ContinuationToken>folder/sub/file1.txt</ContinuationToken>"));
         assertTrue(secondPage.contains("<IsTruncated>false</IsTruncated>"));
         assertFalse(secondPage.contains("<NextContinuationToken>"));
+    }
+
+    @Test
+    void testMetadataRoundTripAndCopyObject() {
+        String objectKey = "meta/data.txt";
+        String initialMtime = "1700000000.000000000";
+        String updatedMtime = "1700001000.500000000";
+
+        webTestClient.put()
+                .uri("/" + bucket + "/" + objectKey)
+                .header("Authorization", authHeader)
+                .header("Content-Type", "text/plain")
+                .header("x-amz-meta-mtime", initialMtime)
+                .header("x-amz-meta-mode", "33188")
+                .bodyValue("hello metadata")
+                .exchange()
+                .expectStatus().isCreated();
+
+        webTestClient.head()
+                .uri("/" + bucket + "/" + objectKey)
+                .header("Authorization", authHeader)
+                .exchange()
+                .expectStatus().isOk()
+                .expectHeader().valueEquals("x-amz-meta-mtime", initialMtime);
+
+        String copyResult = webTestClient.put()
+                .uri("/" + bucket + "/" + objectKey)
+                .header("Authorization", authHeader)
+                .header("x-amz-copy-source", "/" + bucket + "/" + objectKey)
+                .header("x-amz-metadata-directive", "REPLACE")
+                .header("x-amz-meta-mtime", updatedMtime)
+                .exchange()
+                .expectStatus().isOk()
+                .expectBody(String.class)
+                .returnResult()
+                .getResponseBody();
+
+        assertNotNull(copyResult);
+        assertTrue(copyResult.contains("<CopyObjectResult>"));
+        assertTrue(copyResult.contains("<ETag>\""));
+
+        webTestClient.head()
+                .uri("/" + bucket + "/" + objectKey)
+                .header("Authorization", authHeader)
+                .exchange()
+                .expectStatus().isOk()
+                .expectHeader().valueEquals("x-amz-meta-mtime", updatedMtime)
+                .expectHeader().exists(HttpHeaders.LAST_MODIFIED);
     }
 
     private void upload(String objectKey, String body) {
