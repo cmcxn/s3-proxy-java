@@ -1,0 +1,25 @@
+# Maven target directory (except for built JAR)
+target/
+!target/s3-proxy-java-0.1.0.jar
+
+# IDE files
+.idea/
+*.iml
+.vscode/
+*.swp
+*.swo
+
+# Git files
+.git/
+
+# Test-related files that we don't need in the image
+src/test/
+
+# Data files
+data/
+*.db
+*.mv.db
+*.trace.db
+
+# Logs
+*.log
