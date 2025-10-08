@@ -513,7 +513,57 @@ public class S3CompatibleController {
         // Extract key by removing the bucket part: /bucket/key -> key
         String key = path.substring(("/" + bucket + "/").length());
         log.info("GET object: bucket={}, key={}", bucket, key);
-        
+
+        if (key.isEmpty()) {
+            // MinIO client (mc) sometimes performs GET requests against bucket URLs with a
+            // trailing slash ("/bucket/") when checking bucket state. In that case the
+            // request should behave the same as a regular bucket listing request instead of
+            // being treated as an object lookup with an empty key, which previously returned
+            // a 404 and caused mc to believe the bucket was missing. We delegate to the
+            // existing listObjects handler and convert its String body into a byte[] response.
+            String prefix = exchange.getRequest().getQueryParams().getFirst("prefix");
+            String delimiter = exchange.getRequest().getQueryParams().getFirst("delimiter");
+            String maxKeysParam = exchange.getRequest().getQueryParams().getFirst("max-keys");
+            String marker = exchange.getRequest().getQueryParams().getFirst("marker");
+            String listType = exchange.getRequest().getQueryParams().getFirst("list-type");
+            String continuationToken = exchange.getRequest().getQueryParams().getFirst("continuation-token");
+            String startAfter = exchange.getRequest().getQueryParams().getFirst("start-after");
+
+            int maxKeys = 1000;
+            if (maxKeysParam != null && !maxKeysParam.isEmpty()) {
+                try {
+                    maxKeys = Integer.parseInt(maxKeysParam);
+                } catch (NumberFormatException e) {
+                    log.warn("Invalid max-keys value '{}', falling back to default", maxKeysParam);
+                }
+            }
+
+            String resolvedPrefix = prefix != null ? prefix : "";
+            String resolvedMarker = marker != null ? marker : "";
+            String resolvedListType = listType != null ? listType : "1";
+            String resolvedContinuationToken = continuationToken != null ? continuationToken : "";
+            String resolvedStartAfter = startAfter != null ? startAfter : "";
+
+            return listObjects(bucket,
+                    resolvedPrefix,
+                    delimiter,
+                    maxKeys,
+                    resolvedMarker,
+                    resolvedListType,
+                    resolvedContinuationToken,
+                    resolvedStartAfter)
+                    .map(response -> {
+                        byte[] body = null;
+                        if (response.getBody() != null) {
+                            body = response.getBody().getBytes(StandardCharsets.UTF_8);
+                        }
+
+                        HttpHeaders headers = new HttpHeaders();
+                        headers.putAll(response.getHeaders());
+                        return new ResponseEntity<>(body, headers, response.getStatusCode());
+                    });
+        }
+
         return Mono.fromCallable(() -> {
             try {
                 DeduplicationService.FileData fileData = deduplicationService.getObject(bucket, key);
