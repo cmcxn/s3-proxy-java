@@ -504,4 +504,27 @@ src/main/java/com/example/s3proxy/
 - [手动测试指南](MANUAL_TESTING.md)
 - [MinIO SDK 兼容性说明](MINIO_SDK_COMPATIBILITY.md)
 - [对象列表功能演示](OBJECT_LISTING_DEMO.md)
+- [Docker 发布流水线说明](DOCKER_PUBLISHING.md)
+
+## Docker Hub 镜像
+
+本项目提供预构建的 Docker 镜像，可直接从 Docker Hub 获取：
+
+```bash
+# 拉取最新版本
+docker pull [DOCKER_USERNAME]/s3-proxy-java:latest
+
+# 运行容器
+docker run -d \
+  --name s3-proxy \
+  -p 8080:8080 \
+  -e MINIO_ENDPOINT=http://host.docker.internal:9000 \
+  -e MINIO_ACCESS_KEY=minioadmin \
+  -e MINIO_SECRET_KEY=minioadmin \
+  [DOCKER_USERNAME]/s3-proxy-java:latest
+```
+
+> **注意**: 请将 `[DOCKER_USERNAME]` 替换为实际的 Docker Hub 用户名。
+
+详细的 Docker 发布和使用说明请参阅 [Docker 发布流水线说明](DOCKER_PUBLISHING.md)。
 
