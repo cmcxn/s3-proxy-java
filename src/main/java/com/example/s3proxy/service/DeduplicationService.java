@@ -9,6 +9,8 @@ import io.minio.PutObjectArgs;
 import io.minio.GetObjectArgs;
 import io.minio.GetObjectResponse;
 import io.minio.RemoveObjectArgs;
+import io.minio.BucketExistsArgs;
+import io.minio.MakeBucketArgs;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -36,6 +38,9 @@ public class DeduplicationService {
     private final MinioClient minioClient;
     private final String dedupeStorageBucket;
     
+    // Flag to track if we've verified the dedupe bucket exists
+    private volatile boolean dedupeStorageBucketChecked = false;
+    
     public DeduplicationService(FileRepository fileRepository, 
                                UserFileRepository userFileRepository,
                                HashService hashService,
@@ -49,10 +54,42 @@ public class DeduplicationService {
     }
     
     /**
+     * Ensures the dedupe storage bucket exists, creating it if necessary.
+     * This method is thread-safe and will only check once per service instance.
+     */
+    private void ensureDedupeStorageBucketExists() throws Exception {
+        if (!dedupeStorageBucketChecked) {
+            synchronized (this) {
+                if (!dedupeStorageBucketChecked) {
+                    log.info("Checking if dedupe storage bucket exists: {}", dedupeStorageBucket);
+                    boolean bucketExists = minioClient.bucketExists(
+                        BucketExistsArgs.builder().bucket(dedupeStorageBucket).build()
+                    );
+                    
+                    if (!bucketExists) {
+                        log.warn("Dedupe storage bucket '{}' does not exist. Creating it...", dedupeStorageBucket);
+                        minioClient.makeBucket(
+                            MakeBucketArgs.builder().bucket(dedupeStorageBucket).build()
+                        );
+                        log.info("Successfully created dedupe storage bucket: {}", dedupeStorageBucket);
+                    } else {
+                        log.info("Dedupe storage bucket already exists: {}", dedupeStorageBucket);
+                    }
+                    
+                    dedupeStorageBucketChecked = true;
+                }
+            }
+        }
+    }
+    
+    /**
      * Store a file with deduplication logic
      */
     public String putObject(String bucket, String key, byte[] data, String contentType, Map<String, String> userMetadata) throws Exception {
         log.info("Storing file with deduplication: bucket={}, key={}, size={}", bucket, key, data.length);
+
+        // Ensure the dedupe storage bucket exists before any operations
+        ensureDedupeStorageBucketExists();
 
         // Calculate hash
         String hash = hashService.calculateSHA256(data);
