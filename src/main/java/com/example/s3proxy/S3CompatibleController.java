@@ -17,6 +17,7 @@ import io.minio.http.Method;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpHeaders;
+import org.springframework.http.HttpRange;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
@@ -29,7 +30,10 @@ import org.springframework.core.io.buffer.DataBufferUtils;
 
 import java.io.InputStream;
 import java.time.Duration;
+import java.time.LocalDateTime;
+import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
+import java.time.temporal.ChronoUnit;
 import java.util.Map;
 import java.util.List;
 import java.util.ArrayList;
@@ -42,6 +46,8 @@ import java.util.ArrayList;
 @RestController
 public class S3CompatibleController {
     private static final Logger log = LoggerFactory.getLogger(S3CompatibleController.class);
+    private static final DateTimeFormatter S3_TIMESTAMP_FORMATTER =
+            DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'");
     private final MinioClient minio;
     private final DeduplicationService deduplicationService;
 
@@ -81,28 +87,45 @@ public class S3CompatibleController {
             @RequestParam(value = "prefix", required = false, defaultValue = "") String prefix,
             @RequestParam(value = "delimiter", required = false) String delimiter,
             @RequestParam(value = "max-keys", required = false, defaultValue = "1000") Integer maxKeys,
-            @RequestParam(value = "marker", required = false, defaultValue = "") String marker) {
+            @RequestParam(value = "marker", required = false, defaultValue = "") String marker,
+            @RequestParam(value = "list-type", required = false, defaultValue = "1") String listType,
+            @RequestParam(value = "continuation-token", required = false, defaultValue = "") String continuationToken,
+            @RequestParam(value = "start-after", required = false, defaultValue = "") String startAfter) {
         return Mono.fromCallable(() -> {
             try {
-                log.info("Listing objects: bucket={}, prefix='{}', delimiter='{}', maxKeys={}", 
-                    bucket, prefix, delimiter, maxKeys);
-                
+                log.info("Listing objects: bucket={}, prefix='{}', delimiter='{}', maxKeys={}, listType={}, continuationToken='{}', startAfter='{}'",
+                        bucket, prefix, delimiter, maxKeys, listType, continuationToken, startAfter);
+
                 // Use deduplication service to list objects from database instead of MinIO
                 List<DeduplicationService.ObjectInfo> objectInfos = deduplicationService.listObjects(bucket, prefix);
-                
+
                 List<DeduplicationService.ObjectInfo> filteredItems = new ArrayList<>();
                 List<String> commonPrefixes = new ArrayList<>();
                 boolean isTruncated = false;
-                String nextMarker = null;
-                
+                String nextMarkerOrToken = null;
+
+                boolean isListV2 = "2".equals(listType);
+
+                // Determine the effective marker based on the list type
+                String effectiveMarker = marker;
+                if (isListV2) {
+                    if (!continuationToken.isEmpty()) {
+                        effectiveMarker = continuationToken;
+                    } else if (!startAfter.isEmpty()) {
+                        effectiveMarker = startAfter;
+                    } else {
+                        effectiveMarker = "";
+                    }
+                }
+
                 for (DeduplicationService.ObjectInfo objectInfo : objectInfos) {
                     String objectName = objectInfo.getKey();
-                    
+
                     // Skip objects that come before the marker
-                    if (!marker.isEmpty() && objectName.compareTo(marker) <= 0) {
+                    if (!effectiveMarker.isEmpty() && objectName.compareTo(effectiveMarker) <= 0) {
                         continue;
                     }
-                    
+
                     // When using delimiter, handle common prefixes for directory-style listing
                     if (delimiter != null && !delimiter.isEmpty()) {
                         // Remove the prefix from the object name
@@ -123,50 +146,68 @@ public class S3CompatibleController {
                             continue;
                         }
                     }
-                    
+
                     filteredItems.add(objectInfo);
                     // Stop if we've reached maxKeys
                     if (filteredItems.size() >= maxKeys) {
                         isTruncated = true;
-                        nextMarker = objectName; // Set next marker to the last object processed
+                        nextMarkerOrToken = objectName; // Set next marker/token to the last object processed
                         break;
                     }
                 }
-                
+
                 // Build S3-compatible XML response
                 StringBuilder xmlBuilder = new StringBuilder();
                 xmlBuilder.append("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
                 xmlBuilder.append("<ListBucketResult xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\">\n");
                 xmlBuilder.append("  <Name>").append(escapeXml(bucket)).append("</Name>\n");
                 xmlBuilder.append("  <Prefix>").append(escapeXml(prefix)).append("</Prefix>\n");
-                xmlBuilder.append("  <Marker>").append(escapeXml(marker)).append("</Marker>\n");
+
+                if (isListV2) {
+                    if (!continuationToken.isEmpty()) {
+                        xmlBuilder.append("  <ContinuationToken>")
+                                .append(escapeXml(continuationToken))
+                                .append("</ContinuationToken>\n");
+                    }
+                    if (!startAfter.isEmpty()) {
+                        xmlBuilder.append("  <StartAfter>")
+                                .append(escapeXml(startAfter))
+                                .append("</StartAfter>\n");
+                    }
+                    xmlBuilder.append("  <KeyCount>").append(filteredItems.size()).append("</KeyCount>\n");
+                } else {
+                    xmlBuilder.append("  <Marker>").append(escapeXml(marker)).append("</Marker>\n");
+                }
+
                 xmlBuilder.append("  <MaxKeys>").append(maxKeys).append("</MaxKeys>\n");
-                xmlBuilder.append("  <IsTruncated>").append(isTruncated ? "true" : "false").append("</IsTruncated>\n");
-                
                 if (delimiter != null && !delimiter.isEmpty()) {
                     xmlBuilder.append("  <Delimiter>").append(escapeXml(delimiter)).append("</Delimiter>\n");
                 }
-                
-                // Add NextMarker when results are truncated
-                if (isTruncated && nextMarker != null) {
-                    xmlBuilder.append("  <NextMarker>").append(escapeXml(nextMarker)).append("</NextMarker>\n");
+                xmlBuilder.append("  <IsTruncated>").append(isTruncated ? "true" : "false").append("</IsTruncated>\n");
+
+                // Add continuation/next marker elements when results are truncated
+                if (isTruncated && nextMarkerOrToken != null) {
+                    if (isListV2) {
+                        xmlBuilder.append("  <NextContinuationToken>")
+                                .append(escapeXml(nextMarkerOrToken))
+                                .append("</NextContinuationToken>\n");
+                    } else {
+                        xmlBuilder.append("  <NextMarker>")
+                                .append(escapeXml(nextMarkerOrToken))
+                                .append("</NextMarker>\n");
+                    }
                 }
-                
+
                 // Add objects to XML
                 for (DeduplicationService.ObjectInfo objectInfo : filteredItems) {
                     xmlBuilder.append("  <Contents>\n");
                     xmlBuilder.append("    <Key>").append(escapeXml(objectInfo.getKey())).append("</Key>\n");
-                    
-                    // Format LastModified to match MinIO's format with milliseconds
-                    String lastModified = objectInfo.getLastModified()
-                            .atZone(java.time.ZoneOffset.UTC)
-                            .format(java.time.format.DateTimeFormatter.ISO_INSTANT);
-                    if (!lastModified.contains(".")) {
-                        // Add .000 if there are no milliseconds
-                        lastModified = lastModified.replace("Z", ".000Z");
+
+                    String lastModified = formatS3Timestamp(objectInfo.getLastModified());
+                    if (!lastModified.isEmpty()) {
+                        xmlBuilder.append("    <LastModified>").append(lastModified).append("</LastModified>\n");
                     }
-                    xmlBuilder.append("    <LastModified>").append(lastModified).append("</LastModified>\n");
-                    
+
                     // ETag should include quotes and not be XML escaped
                     String etag = objectInfo.getEtag().substring(0, Math.min(16, objectInfo.getEtag().length()));
                     if (!etag.startsWith("\"")) {
@@ -181,14 +222,14 @@ public class S3CompatibleController {
                     xmlBuilder.append("    </Owner>\n");
                     xmlBuilder.append("  </Contents>\n");
                 }
-                
+
                 // Add common prefixes for directory-style listing
                 for (String commonPrefix : commonPrefixes) {
                     xmlBuilder.append("  <CommonPrefixes>\n");
                     xmlBuilder.append("    <Prefix>").append(escapeXml(commonPrefix)).append("</Prefix>\n");
                     xmlBuilder.append("  </CommonPrefixes>\n");
                 }
-                
+
                 xmlBuilder.append("</ListBucketResult>");
                 
                 HttpHeaders headers = new HttpHeaders();
@@ -216,6 +257,27 @@ public class S3CompatibleController {
                    .replace("'", "&apos;");
     }
 
+    private String formatS3Timestamp(LocalDateTime timestamp) {
+        if (timestamp == null) {
+            return "";
+        }
+        return timestamp
+                .atOffset(ZoneOffset.UTC)
+                .truncatedTo(ChronoUnit.MILLIS)
+                .format(S3_TIMESTAMP_FORMATTER);
+    }
+
+    private void applyLastModifiedHeader(HttpHeaders headers, LocalDateTime lastModified) {
+        if (headers == null || lastModified == null) {
+            return;
+        }
+        String httpDate = lastModified
+                .atOffset(ZoneOffset.UTC)
+                .truncatedTo(ChronoUnit.SECONDS)
+                .format(DateTimeFormatter.RFC_1123_DATE_TIME);
+        headers.set(HttpHeaders.LAST_MODIFIED, httpDate);
+    }
+
     // GET /{bucket}/{**key} - S3 compatible GET object  
     @GetMapping(value = "/{bucket}/**")
     public Mono<ResponseEntity<byte[]>> getObject(
@@ -237,12 +299,45 @@ public class S3CompatibleController {
                 if (fileData.getContentType() != null) {
                     h.setContentType(MediaType.parseMediaType(fileData.getContentType()));
                 }
-                // Add proper S3 headers using file hash
-                h.set("ETag", "\"" + fileData.getHash().substring(0, 16) + "\"");
+
+                String hashPrefix = fileData.getHash().substring(0, Math.min(16, fileData.getHash().length()));
+                h.set("ETag", "\"" + hashPrefix + "\"");
+                applyLastModifiedHeader(h, fileData.getLastModified());
                 h.set("x-amz-request-id", java.util.UUID.randomUUID().toString().replace("-", "").substring(0, 16).toUpperCase());
                 h.set("x-amz-id-2", java.util.UUID.randomUUID().toString());
                 h.set("Server", "MinIO");
-                
+                h.set(HttpHeaders.ACCEPT_RANGES, "bytes");
+
+                String rangeHeader = exchange.getRequest().getHeaders().getFirst(HttpHeaders.RANGE);
+                if (rangeHeader != null && !rangeHeader.isEmpty()) {
+                    try {
+                        List<HttpRange> ranges = HttpRange.parseRanges(rangeHeader);
+                        if (ranges.size() == 1) {
+                            HttpRange range = ranges.get(0);
+                            long fileSize = fileData.getSize();
+                            long rangeStart = range.getRangeStart(fileSize);
+                            long rangeEnd = range.getRangeEnd(fileSize);
+                            if (rangeStart >= fileSize) {
+                                HttpHeaders errorHeaders = new HttpHeaders();
+                                errorHeaders.set(HttpHeaders.CONTENT_RANGE, "bytes */" + fileSize);
+                                return new ResponseEntity<>(null, errorHeaders, HttpStatus.REQUESTED_RANGE_NOT_SATISFIABLE);
+                            }
+
+                            int length = (int) (rangeEnd - rangeStart + 1);
+                            byte[] body = new byte[length];
+                            System.arraycopy(fileData.getData(), (int) rangeStart, body, 0, length);
+
+                            h.setContentLength(length);
+                            h.set(HttpHeaders.CONTENT_RANGE, String.format("bytes %d-%d/%d", rangeStart, rangeEnd, fileSize));
+                            return new ResponseEntity<>(body, h, HttpStatus.PARTIAL_CONTENT);
+                        }
+                    } catch (IllegalArgumentException ex) {
+                        log.warn("Invalid range header '{}': {}", rangeHeader, ex.getMessage());
+                        // Fall back to full response
+                    }
+                }
+
+                h.setContentLength(fileData.getSize());
                 return new ResponseEntity<>(fileData.getData(), h, HttpStatus.OK);
             } catch (Exception e) {
                 log.error("Error getting object: ", e);
@@ -339,11 +434,14 @@ public class S3CompatibleController {
                 if (fileData.getContentType() != null) {
                     headers.setContentType(MediaType.parseMediaType(fileData.getContentType()));
                 }
-                headers.set("ETag", "\"" + fileData.getHash().substring(0, 16) + "\"");
+                String hashPrefix = fileData.getHash().substring(0, Math.min(16, fileData.getHash().length()));
+                headers.set("ETag", "\"" + hashPrefix + "\"");
+                applyLastModifiedHeader(headers, fileData.getLastModified());
                 headers.set("x-amz-request-id", java.util.UUID.randomUUID().toString().replace("-", "").substring(0, 16).toUpperCase());
                 headers.set("x-amz-id-2", java.util.UUID.randomUUID().toString());
                 headers.set("Server", "MinIO");
-                
+                headers.set(HttpHeaders.ACCEPT_RANGES, "bytes");
+
                 return new ResponseEntity<>(headers, HttpStatus.OK);
             } catch (Exception e) {
                 log.debug("Object not found for HEAD request: bucket={}, key={}", bucket, key);

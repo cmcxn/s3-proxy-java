@@ -17,6 +17,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.io.ByteArrayInputStream;
 import java.io.InputStream;
+import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Optional;
 
@@ -100,9 +101,10 @@ public class DeduplicationService {
             UserFileEntity oldMapping = existingUserFile.get();
             FileEntity oldFile = oldMapping.getFile();
             fileRepository.decrementReferenceCount(oldFile.getId());
-            
+
             // Update to new file
             oldMapping.setFile(fileEntity);
+            oldMapping.setCreatedAt(LocalDateTime.now());
             userFileRepository.save(oldMapping);
         } else {
             // Create new mapping
@@ -130,18 +132,24 @@ public class DeduplicationService {
             return null;
         }
         
-        FileEntity fileEntity = userFile.get().getFile();
+        UserFileEntity userFileEntity = userFile.get();
+        FileEntity fileEntity = userFileEntity.getFile();
         log.debug("Found file: hash={}, storage_path={}", fileEntity.getHashValue(), fileEntity.getStoragePath());
-        
+
         // Get data from MinIO using storage path
         try (GetObjectResponse response = minioClient.getObject(
                 GetObjectArgs.builder()
                         .bucket(dedupeStorageBucket) // Use configurable bucket for content-addressed storage
                         .object(fileEntity.getStoragePath())
                         .build())) {
-            
+
             byte[] data = response.readAllBytes();
-            return new FileData(data, fileEntity.getContentType(), fileEntity.getHashValue(), fileEntity.getSize());
+            return new FileData(
+                    data,
+                    fileEntity.getContentType(),
+                    fileEntity.getHashValue(),
+                    fileEntity.getSize(),
+                    userFileEntity.getCreatedAt());
         }
     }
     
@@ -249,17 +257,20 @@ public class DeduplicationService {
         private final String contentType;
         private final String hash;
         private final long size;
-        
-        public FileData(byte[] data, String contentType, String hash, long size) {
+        private final LocalDateTime lastModified;
+
+        public FileData(byte[] data, String contentType, String hash, long size, LocalDateTime lastModified) {
             this.data = data;
             this.contentType = contentType;
             this.hash = hash;
             this.size = size;
+            this.lastModified = lastModified;
         }
-        
+
         public byte[] getData() { return data; }
         public String getContentType() { return contentType; }
         public String getHash() { return hash; }
         public long getSize() { return size; }
+        public LocalDateTime getLastModified() { return lastModified; }
     }
 }
