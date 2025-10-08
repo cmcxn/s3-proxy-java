@@ -1,5 +1,6 @@
 package com.example.s3proxy;
 
+import com.example.s3proxy.service.BucketService;
 import com.example.s3proxy.service.DeduplicationService;
 import com.example.s3proxy.service.MultipartUploadService;
 import io.minio.MinioClient;
@@ -10,7 +11,6 @@ import io.minio.RemoveObjectArgs;
 import io.minio.StatObjectArgs;
 import io.minio.StatObjectResponse;
 import io.minio.GetPresignedObjectUrlArgs;
-import io.minio.BucketExistsArgs;
 import io.minio.ListObjectsArgs;
 import io.minio.Result;
 import io.minio.messages.Item;
@@ -62,13 +62,28 @@ public class S3CompatibleController {
     private final MinioClient minio;
     private final DeduplicationService deduplicationService;
     private final MultipartUploadService multipartUploadService;
+    private final BucketService bucketService;
 
     public S3CompatibleController(MinioClient minio,
                                   DeduplicationService deduplicationService,
-                                  MultipartUploadService multipartUploadService) {
+                                  MultipartUploadService multipartUploadService,
+                                  BucketService bucketService) {
         this.minio = minio;
         this.deduplicationService = deduplicationService;
         this.multipartUploadService = multipartUploadService;
+        this.bucketService = bucketService;
+    }
+
+    // PUT /{bucket} - Create bucket (required for mc mirror)
+    @PutMapping(value = "/{bucket}")
+    public Mono<ResponseEntity<Void>> createBucket(@PathVariable String bucket) {
+        return Mono.fromCallable(() -> {
+            bucketService.ensureBucketExists(bucket);
+
+            HttpHeaders headers = createStandardS3Headers();
+            headers.set("Location", "/" + bucket);
+            return new ResponseEntity<>(headers, HttpStatus.OK);
+        });
     }
 
     @PostMapping(value = "/{bucket}/**")
@@ -78,6 +93,8 @@ public class S3CompatibleController {
         String path = exchange.getRequest().getPath().value();
         String key = path.substring(("/" + bucket + "/").length());
         log.info("POST object request: bucket={}, key={}, query={}", bucket, key, exchange.getRequest().getQueryParams());
+
+        bucketService.ensureBucketExists(bucket);
 
         if (exchange.getRequest().getQueryParams().containsKey("uploads")) {
             Map<String, String> metadata = extractUserMetadata(exchange.getRequest().getHeaders());
@@ -154,8 +171,7 @@ public class S3CompatibleController {
     public Mono<ResponseEntity<Void>> headBucket(@PathVariable String bucket) {
         return Mono.fromCallable(() -> {
             try {
-                // Check if bucket exists using the underlying MinIO client
-                boolean exists = minio.bucketExists(BucketExistsArgs.builder().bucket(bucket).build());
+                boolean exists = bucketService.bucketExists(bucket);
                 if (exists) {
                     HttpHeaders headers = new HttpHeaders();
                     headers.set("x-amz-bucket-region", "us-east-1");

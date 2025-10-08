@@ -26,9 +26,12 @@ class DeduplicationServiceTest {
     
     @Mock
     private HashService hashService;
-    
+
     @Mock
     private MinioClient minioClient;
+
+    @Mock
+    private BucketService bucketService;
     
     private DeduplicationService deduplicationService;
     
@@ -36,7 +39,7 @@ class DeduplicationServiceTest {
     void setUp() {
         MockitoAnnotations.openMocks(this);
         deduplicationService = new DeduplicationService(
-            fileRepository, userFileRepository, hashService, minioClient, "test-dedupe-storage"
+            fileRepository, userFileRepository, hashService, bucketService, minioClient, "test-dedupe-storage"
         );
     }
 
@@ -52,20 +55,22 @@ class DeduplicationServiceTest {
         when(hashService.calculateSHA256(data)).thenReturn(expectedHash);
         when(fileRepository.findByHashValue(expectedHash)).thenReturn(Optional.empty());
         when(userFileRepository.findByBucketAndKey(bucket, key)).thenReturn(Optional.empty());
-        
+        when(bucketService.bucketExists(bucket)).thenReturn(true);
+
         FileEntity mockFile = new FileEntity(expectedHash, (long) data.length, contentType, "dedupe-data/" + expectedHash);
         when(fileRepository.save(any(FileEntity.class))).thenReturn(mockFile);
         when(userFileRepository.save(any(UserFileEntity.class))).thenReturn(new UserFileEntity());
-        
+
         // Act
         String etag = deduplicationService.putObject(bucket, key, data, contentType, java.util.Collections.emptyMap());
-        
+
         // Assert
         assertEquals(expectedHash.substring(0, 16), etag);
         verify(hashService).calculateSHA256(data);
         verify(fileRepository).findByHashValue(expectedHash);
         verify(fileRepository).save(any(FileEntity.class));
         verify(userFileRepository).save(any(UserFileEntity.class));
+        verify(bucketService).ensureBucketExists(bucket);
         verify(minioClient).putObject(any());
     }
     
@@ -87,7 +92,8 @@ class DeduplicationServiceTest {
         when(userFileRepository.findByBucketAndKey(bucket, key)).thenReturn(Optional.empty());
         when(fileRepository.save(existingFile)).thenReturn(existingFile);
         when(userFileRepository.save(any(UserFileEntity.class))).thenReturn(new UserFileEntity());
-        
+        when(bucketService.bucketExists(bucket)).thenReturn(true);
+
         // Mock the atomic increment and subsequent fetch
         doNothing().when(fileRepository).incrementReferenceCount(1L);
         FileEntity refreshedFile = new FileEntity(expectedHash, (long) data.length, contentType, "dedupe-data/" + expectedHash);
@@ -108,6 +114,7 @@ class DeduplicationServiceTest {
         verify(fileRepository).incrementReferenceCount(1L);
         verify(fileRepository, times(2)).findById(1L);
         verify(userFileRepository).save(any(UserFileEntity.class));
+        verify(bucketService).ensureBucketExists(bucket);
         verify(minioClient, never()).putObject(any()); // Should not upload again
     }
     
@@ -122,6 +129,7 @@ class DeduplicationServiceTest {
         FileEntity fileEntity = new FileEntity(hash, (long) expectedData.length, "text/plain", "dedupe-data/" + hash);
         UserFileEntity userFile = new UserFileEntity(bucket, key, fileEntity);
         
+        when(bucketService.bucketExists(bucket)).thenReturn(true);
         when(userFileRepository.findByBucketAndKey(bucket, key)).thenReturn(Optional.of(userFile));
         
         // Mock MinIO response - we can't easily test this without real MinIO
@@ -143,6 +151,7 @@ class DeduplicationServiceTest {
         String bucket = "test-bucket";
         String key = "test-key";
         
+        when(bucketService.bucketExists(bucket)).thenReturn(true);
         when(userFileRepository.findByBucketAndKey(bucket, key)).thenReturn(Optional.empty());
         
         // Act
