@@ -22,14 +22,14 @@ USER s3proxy
 # 暴露端口
 EXPOSE 8080
 
-# 环境变量默认值
+# 环境变量默认值（非敏感信息）
 ENV JAVA_OPTS="-Xms512m -Xmx1024m" \
     SPRING_PROFILES_ACTIVE="h2" \
-    MINIO_ENDPOINT="http://localhost:9000" \
-    MINIO_ACCESS_KEY="minioadmin" \
-    MINIO_SECRET_KEY="minioadmin" \
-    MINIO_DEDUPE_BUCKET="dedupe-storage" \
-    S3_AUTH_ENABLED="true"
+    MINIO_DEDUPE_BUCKET="dedupe-storage"
+
+# 敏感或配置相关的环境变量需要在运行时提供：
+# MINIO_ENDPOINT, MINIO_ACCESS_KEY, MINIO_SECRET_KEY, S3_AUTH_ENABLED 
+# 应通过 docker run -e 或 docker-compose 设置
 
 # 启动命令
 ENTRYPOINT ["sh", "-c", "java $JAVA_OPTS -jar app.jar"]
